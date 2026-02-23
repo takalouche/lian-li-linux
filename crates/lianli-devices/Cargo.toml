@@ -1,0 +1,18 @@
+[package]
+name = "lianli-devices"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+lianli-shared = { path = "../lianli-shared" }
+lianli-transport = { path = "../lianli-transport" }
+cbc = { workspace = true }
+des = { workspace = true }
+hex = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+parking_lot = { workspace = true }
+once_cell = { workspace = true }
+rusb = { workspace = true }
+hidapi = { workspace = true }

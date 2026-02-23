@@ -1,0 +1,17 @@
+[package]
+name = "lianli-gui"
+version = "0.1.0"
+edition = "2021"
+
+[build-dependencies]
+tauri-build = { workspace = true, features = [] }
+
+[dependencies]
+lianli-shared = { path = "../../lianli-shared" }
+tauri = { workspace = true, features = ["custom-protocol"] }
+tauri-plugin-dialog = { workspace = true }
+tauri-plugin-shell = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }

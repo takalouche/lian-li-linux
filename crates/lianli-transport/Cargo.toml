@@ -1,0 +1,11 @@
+[package]
+name = "lianli-transport"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+hidapi = { workspace = true }
+rusb = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }

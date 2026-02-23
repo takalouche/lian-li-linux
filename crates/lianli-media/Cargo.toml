@@ -1,0 +1,13 @@
+[package]
+name = "lianli-media"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+lianli-shared = { path = "../lianli-shared" }
+image = { workspace = true }
+rusttype = { workspace = true }
+tempfile = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }

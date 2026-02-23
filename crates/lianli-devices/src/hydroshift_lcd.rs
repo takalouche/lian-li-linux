@@ -1,0 +1,457 @@
+//! HydroShift LCD / Galahad2 LCD / Vision AIO driver (pump + fan + LCD + temp).
+//!
+//! HydroShift LCD:   VID=0x0416, PID=0x7398/0x7399/0x739A
+//! Galahad2 LCD:     VID=0x0416, PID=0x7391
+//! Galahad2 Vision:  VID=0x0416, PID=0x7395
+//!
+//! All use an identical protocol with three HID report types:
+//!   A-command (64B, Report ID 1): pump/fan PWM, handshake, firmware
+//!   B-command (1024B out, Report ID 2): LCD control, JPEG frames
+//!   C-command (512B, Report ID 3): LCD frames (firmware >= 1.2)
+//!
+//! LCD: 480x480 pixels, 24fps. Pump/fan PWM: 0-100%.
+//! Coolant temperature sensor available.
+
+use crate::traits::{AioDevice, FanDevice, LcdDevice};
+use anyhow::{bail, Context, Result};
+use hidapi::HidDevice;
+use lianli_shared::screen::ScreenInfo;
+use parking_lot::Mutex;
+use tracing::{debug, info, warn};
+
+// Report IDs
+const REPORT_ID_A: u8 = 0x01;
+const REPORT_ID_B: u8 = 0x02;
+
+// Packet sizes
+const A_PACKET_SIZE: usize = 64;
+const A_HEADER_LEN: usize = 6;
+const B_PACKET_SIZE: usize = 1024;
+const B_HEADER_LEN: usize = 11;
+const B_MAX_PAYLOAD: usize = B_PACKET_SIZE - B_HEADER_LEN; // 1013
+
+const READ_TIMEOUT_MS: i32 = 200;
+const INIT_READ_TIMEOUT_MS: i32 = 3000;
+
+// A-Commands
+const CMD_HANDSHAKE: u8 = 0x81;
+const CMD_GET_FIRMWARE: u8 = 0x86;
+const CMD_SET_PUMP_PWM: u8 = 0x8A;
+const CMD_SET_FAN_PWM: u8 = 0x8B;
+
+// B-Commands
+const CMD_LCD_CONTROL: u8 = 0x0C;
+const CMD_SEND_JPEG: u8 = 0x0E;
+
+/// AIO LCD device variant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AioLcdVariant {
+    /// HydroShift LCD (0x7398)
+    HydroShiftLcd,
+    /// HydroShift LCD RGB (0x7399)
+    HydroShiftLcdRgb,
+    /// HydroShift LCD TL (0x739A)
+    HydroShiftLcdTl,
+    /// Galahad2 LCD (0x7391)
+    Galahad2Lcd,
+    /// Galahad2 Vision (0x7395)
+    Galahad2Vision,
+}
+
+impl AioLcdVariant {
+    pub fn from_pid(pid: u16) -> Option<Self> {
+        match pid {
+            0x7398 => Some(Self::HydroShiftLcd),
+            0x7399 => Some(Self::HydroShiftLcdRgb),
+            0x739A => Some(Self::HydroShiftLcdTl),
+            0x7391 => Some(Self::Galahad2Lcd),
+            0x7395 => Some(Self::Galahad2Vision),
+            _ => None,
+        }
+    }
+
+    pub fn name(&self) -> &'static str {
+        match self {
+            Self::HydroShiftLcd => "HydroShift LCD",
+            Self::HydroShiftLcdRgb => "HydroShift LCD RGB",
+            Self::HydroShiftLcdTl => "HydroShift LCD TL",
+            Self::Galahad2Lcd => "Galahad II LCD",
+            Self::Galahad2Vision => "Galahad II Vision",
+        }
+    }
+}
+
+/// LCD control mode.
+#[repr(u8)]
+#[derive(Debug, Clone, Copy)]
+pub enum LcdControlMode {
+    LocalUi = 0,
+    Application = 1,
+    LocalH264 = 2,
+    LocalAvi = 3,
+    LcdSetting = 4,
+    LcdTest = 5,
+}
+
+/// Screen rotation.
+#[repr(u8)]
+#[derive(Debug, Clone, Copy)]
+pub enum ScreenRotation {
+    Rotate0 = 0,
+    Rotate90 = 1,
+    Rotate180 = 2,
+    Rotate270 = 3,
+}
+
+impl ScreenRotation {
+    pub fn from_degrees(degrees: u16) -> Self {
+        match degrees {
+            90 => Self::Rotate90,
+            180 => Self::Rotate180,
+            270 => Self::Rotate270,
+            _ => Self::Rotate0,
+        }
+    }
+}
+
+/// Handshake response: RPM + temperature.
+#[derive(Debug, Clone)]
+pub struct AioHandshake {
+    pub fan_rpm: u16,
+    pub pump_rpm: u16,
+    pub temp_valid: bool,
+    pub coolant_temp: f32,
+}
+
+/// HydroShift LCD / Galahad2 LCD AIO controller.
+///
+/// Provides pump + fan speed control, coolant temperature reading, and LCD streaming.
+/// Does NOT touch RGB/LED effects — that's OpenRGB's domain.
+pub struct HydroShiftLcdController {
+    device: Mutex<HidDevice>,
+    variant: AioLcdVariant,
+    last_handshake: Option<AioHandshake>,
+    brightness: u8,
+    rotation: ScreenRotation,
+    initialized: bool,
+}
+
+impl HydroShiftLcdController {
+    pub fn new(device: HidDevice, pid: u16) -> Result<Self> {
+        let variant = AioLcdVariant::from_pid(pid)
+            .ok_or_else(|| anyhow::anyhow!("Unknown AIO LCD PID: {pid:#06x}"))?;
+
+        let mut ctrl = Self {
+            device: Mutex::new(device),
+            variant,
+            last_handshake: None,
+            brightness: 50,
+            rotation: ScreenRotation::Rotate0,
+            initialized: false,
+        };
+
+        ctrl.init()?;
+        Ok(ctrl)
+    }
+
+    fn init(&mut self) -> Result<()> {
+        info!("Initializing {}", self.variant.name());
+
+        match self.read_firmware_internal(INIT_READ_TIMEOUT_MS) {
+            Ok(fw) => info!("  Firmware: {fw}"),
+            Err(e) => warn!("  Failed to read firmware: {e}"),
+        }
+
+        match self.handshake() {
+            Ok(hs) => {
+                info!(
+                    "  Fan RPM: {}, Pump RPM: {}, Temp: {:.1}°C (valid={})",
+                    hs.fan_rpm, hs.pump_rpm, hs.coolant_temp, hs.temp_valid
+                );
+            }
+            Err(e) => warn!("  Handshake failed: {e}"),
+        }
+
+        Ok(())
+    }
+
+    /// Perform handshake to read RPM and temperature.
+    pub fn handshake(&mut self) -> Result<AioHandshake> {
+        let resp = self.send_a_command(CMD_HANDSHAKE, &[])?;
+        let data = &resp[A_HEADER_LEN..];
+        let data_len = resp[5] as usize;
+
+        if data_len < 4 {
+            bail!("AIO LCD: handshake response too short ({data_len} bytes)");
+        }
+
+        let temp_valid = data_len >= 5 && data[4] != 0;
+        let coolant_temp = if data_len >= 7 {
+            let integer = data[5] as f32;
+            let fraction = (data[6] % 10) as f32 / 10.0;
+            integer + fraction
+        } else {
+            0.0
+        };
+
+        let hs = AioHandshake {
+            fan_rpm: u16::from_be_bytes([data[0], data[1]]),
+            pump_rpm: u16::from_be_bytes([data[2], data[3]]),
+            temp_valid,
+            coolant_temp,
+        };
+
+        debug!(
+            "Handshake: fan={}rpm pump={}rpm temp={:.1}°C",
+            hs.fan_rpm, hs.pump_rpm, hs.coolant_temp
+        );
+        self.last_handshake = Some(hs.clone());
+        Ok(hs)
+    }
+
+    /// Set LCD to Application mode with current brightness/rotation.
+    pub fn apply_lcd_settings(&self) -> Result<()> {
+        let mut payload = [0u8; 8];
+        payload[0] = LcdControlMode::Application as u8;
+        payload[1] = self.brightness;
+        payload[2] = self.rotation as u8;
+        // payload[3] = EnableTest (0)
+        // payload[4-6] = TestColor RGB (0)
+        payload[7] = 24; // fps
+
+        self.send_b_command(CMD_LCD_CONTROL, &payload)?;
+        debug!(
+            "LCD settings: brightness={}, rotation={:?}",
+            self.brightness, self.rotation
+        );
+        Ok(())
+    }
+
+    /// Send a JPEG frame to the LCD.
+    pub fn send_jpeg(&self, jpeg_data: &[u8]) -> Result<()> {
+        self.send_b_command_chunked(CMD_SEND_JPEG, jpeg_data)
+    }
+
+    pub fn variant(&self) -> AioLcdVariant {
+        self.variant
+    }
+
+    fn read_firmware_internal(&self, timeout_ms: i32) -> Result<String> {
+        let mut pkt = [0u8; A_PACKET_SIZE];
+        pkt[0] = REPORT_ID_A;
+        pkt[1] = CMD_GET_FIRMWARE;
+
+        let dev = self.device.lock();
+        dev.write(&pkt).context("AIO LCD: write firmware request")?;
+
+        let mut buf = [0u8; A_PACKET_SIZE];
+        let n = dev
+            .read_timeout(&mut buf, timeout_ms)
+            .context("AIO LCD: read firmware")?;
+
+        if n == 0 {
+            bail!("AIO LCD: no firmware response");
+        }
+
+        let data_len = buf[5] as usize;
+        let data = &buf[A_HEADER_LEN..A_HEADER_LEN + data_len.min(58)];
+        Ok(String::from_utf8_lossy(data)
+            .trim_end_matches('\0')
+            .to_string())
+    }
+
+    // -- A-Command (64-byte) --
+
+    fn send_a_command(&self, cmd: u8, data: &[u8]) -> Result<Vec<u8>> {
+        let mut pkt = [0u8; A_PACKET_SIZE];
+        pkt[0] = REPORT_ID_A;
+        pkt[1] = cmd;
+        pkt[5] = data.len() as u8;
+        let copy_len = data.len().min(58);
+        pkt[A_HEADER_LEN..A_HEADER_LEN + copy_len].copy_from_slice(&data[..copy_len]);
+
+        let dev = self.device.lock();
+        dev.write(&pkt).context("AIO LCD: write A-command")?;
+
+        let mut buf = [0u8; A_PACKET_SIZE];
+        let n = dev
+            .read_timeout(&mut buf, READ_TIMEOUT_MS)
+            .context("AIO LCD: read A-response")?;
+
+        if n == 0 {
+            bail!("AIO LCD: no response to A-command {cmd:#04x}");
+        }
+
+        Ok(buf[..n].to_vec())
+    }
+
+    // -- B-Command (1024-byte) --
+
+    fn send_b_command(&self, cmd: u8, data: &[u8]) -> Result<()> {
+        self.send_b_command_chunked(cmd, data)
+    }
+
+    fn send_b_command_chunked(&self, cmd: u8, data: &[u8]) -> Result<()> {
+        let total_size = data.len();
+        let mut offset = 0;
+        let mut packet_num: u32 = 0;
+        let dev = self.device.lock();
+
+        loop {
+            let remaining = total_size.saturating_sub(offset);
+            let chunk_len = remaining.min(B_MAX_PAYLOAD);
+
+            let pkt = build_b_packet(
+                cmd,
+                total_size as u32,
+                packet_num,
+                if chunk_len > 0 {
+                    &data[offset..offset + chunk_len]
+                } else {
+                    &[]
+                },
+            );
+
+            dev.write(&pkt).context("AIO LCD: write B-command")?;
+
+            offset += chunk_len;
+            packet_num += 1;
+
+            if offset >= total_size {
+                break;
+            }
+        }
+
+        // Read acknowledgment (may be empty, that's fine)
+        let mut buf = [0u8; 512];
+        let _ = dev.read_timeout(&mut buf, 20);
+
+        Ok(())
+    }
+}
+
+impl FanDevice for HydroShiftLcdController {
+    fn set_fan_speed(&self, _slot: u8, duty: u8) -> Result<()> {
+        let pwm = duty.min(100);
+        self.send_a_command(CMD_SET_FAN_PWM, &[0x00, pwm])?;
+        debug!("Set fan PWM to {pwm}%");
+        Ok(())
+    }
+
+    fn set_fan_speeds(&self, duties: &[u8]) -> Result<()> {
+        if let Some(&duty) = duties.first() {
+            self.set_fan_speed(0, duty)?;
+        }
+        Ok(())
+    }
+
+    fn read_fan_rpm(&self) -> Result<Vec<u16>> {
+        Ok(vec![self
+            .last_handshake
+            .as_ref()
+            .map(|hs| hs.fan_rpm)
+            .unwrap_or(0)])
+    }
+
+    fn fan_slot_count(&self) -> u8 {
+        1
+    }
+}
+
+impl AioDevice for HydroShiftLcdController {
+    fn set_pump_speed(&self, duty: u8) -> Result<()> {
+        let pwm = duty.min(100);
+        self.send_a_command(CMD_SET_PUMP_PWM, &[0x00, pwm])?;
+        debug!("Set pump PWM to {pwm}%");
+        Ok(())
+    }
+
+    fn read_pump_rpm(&self) -> Result<u16> {
+        Ok(self
+            .last_handshake
+            .as_ref()
+            .map(|hs| hs.pump_rpm)
+            .unwrap_or(0))
+    }
+
+    fn read_coolant_temp(&self) -> Result<f32> {
+        match &self.last_handshake {
+            Some(hs) if hs.temp_valid => Ok(hs.coolant_temp),
+            Some(_) => bail!("Coolant temperature sensor reports invalid"),
+            None => bail!("No handshake data available"),
+        }
+    }
+}
+
+impl LcdDevice for HydroShiftLcdController {
+    fn screen_info(&self) -> &ScreenInfo {
+        &ScreenInfo::AIO_LCD_480
+    }
+
+    fn send_jpeg_frame(&mut self, jpeg_data: &[u8]) -> Result<()> {
+        self.send_jpeg(jpeg_data)
+    }
+
+    fn set_brightness(&self, brightness: u8) -> Result<()> {
+        let mut payload = [0u8; 8];
+        payload[0] = LcdControlMode::Application as u8;
+        payload[1] = brightness.min(100);
+        payload[2] = self.rotation as u8;
+        payload[7] = 24;
+        self.send_b_command(CMD_LCD_CONTROL, &payload)?;
+        Ok(())
+    }
+
+    fn set_rotation(&self, degrees: u16) -> Result<()> {
+        let rotation = ScreenRotation::from_degrees(degrees);
+        let mut payload = [0u8; 8];
+        payload[0] = LcdControlMode::Application as u8;
+        payload[1] = self.brightness;
+        payload[2] = rotation as u8;
+        payload[7] = 24;
+        self.send_b_command(CMD_LCD_CONTROL, &payload)?;
+        Ok(())
+    }
+
+    fn initialize(&mut self) -> Result<()> {
+        if self.initialized {
+            return Ok(());
+        }
+
+        self.apply_lcd_settings()?;
+        self.initialized = true;
+        Ok(())
+    }
+}
+
+// -- B-command packet construction --
+
+fn build_b_packet(cmd: u8, total_data_size: u32, packet_num: u32, payload: &[u8]) -> Vec<u8> {
+    let mut pkt = vec![0u8; B_PACKET_SIZE];
+
+    pkt[0] = REPORT_ID_B;
+    pkt[1] = cmd;
+
+    // Total data size (4 bytes BE)
+    pkt[2] = (total_data_size >> 24) as u8;
+    pkt[3] = (total_data_size >> 16) as u8;
+    pkt[4] = (total_data_size >> 8) as u8;
+    pkt[5] = total_data_size as u8;
+
+    // Packet number (3 bytes BE)
+    pkt[6] = (packet_num >> 16) as u8;
+    pkt[7] = (packet_num >> 8) as u8;
+    pkt[8] = packet_num as u8;
+
+    // Payload length (2 bytes BE)
+    let len = payload.len().min(B_MAX_PAYLOAD);
+    pkt[9] = (len >> 8) as u8;
+    pkt[10] = len as u8;
+
+    // Payload
+    if len > 0 {
+        pkt[B_HEADER_LEN..B_HEADER_LEN + len].copy_from_slice(&payload[..len]);
+    }
+
+    pkt
+}

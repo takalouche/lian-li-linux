@@ -1,0 +1,172 @@
+use crate::fan::{FanConfig, FanCurve};
+use crate::media::{MediaType, SensorDescriptor};
+use anyhow::{bail, Context, Result};
+use serde::{Deserialize, Serialize};
+use serde_json::to_string;
+use std::collections::HashSet;
+use std::fs::File;
+use std::io::BufReader;
+use std::path::{Path, PathBuf};
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct LcdConfig {
+    #[serde(default)]
+    pub index: Option<usize>,
+    pub serial: Option<String>,
+    #[serde(rename = "type")]
+    pub media_type: MediaType,
+    pub path: Option<PathBuf>,
+    pub fps: Option<f32>,
+    pub rgb: Option<[u8; 3]>,
+    #[serde(default)]
+    pub orientation: f32,
+    #[serde(default)]
+    pub sensor: Option<SensorDescriptor>,
+}
+
+impl LcdConfig {
+    pub fn device_id(&self) -> String {
+        if let Some(serial) = &self.serial {
+            format!("serial:{serial}")
+        } else if let Some(index) = self.index {
+            format!("index:{index}")
+        } else {
+            "unknown".to_string()
+        }
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        if self.index.is_none() && self.serial.is_none() {
+            bail!("device config requires either 'index' or 'serial' field");
+        }
+
+        let device_id = self.device_id();
+
+        match self.media_type {
+            MediaType::Image | MediaType::Video | MediaType::Gif => {
+                let path = self
+                    .path
+                    .as_ref()
+                    .ok_or_else(|| anyhow::anyhow!("LCD[{device_id}] requires a media path"))?;
+                if !path.exists() {
+                    bail!(
+                        "LCD[{device_id}] media path '{}' does not exist",
+                        path.display()
+                    );
+                }
+            }
+            MediaType::Color => {
+                if self.rgb.is_none() {
+                    bail!("LCD[{device_id}] color entry requires an 'rgb' field");
+                }
+            }
+            MediaType::Sensor => {
+                let descriptor = self.sensor.as_ref().ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "LCD[{device_id}] sensor configuration missing 'sensor' section"
+                    )
+                })?;
+                descriptor.validate()?;
+            }
+        }
+
+        if let Some(fps) = self.fps {
+            if fps <= 0.0 {
+                bail!("LCD[{device_id}] fps must be positive");
+            }
+        }
+
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct AppConfig {
+    #[serde(default = "default_fps")]
+    pub default_fps: f32,
+    #[serde(default, alias = "devices")]
+    pub lcds: Vec<LcdConfig>,
+    #[serde(default)]
+    pub fan_curves: Vec<FanCurve>,
+    #[serde(default)]
+    pub fans: Option<FanConfig>,
+}
+
+impl Default for AppConfig {
+    fn default() -> Self {
+        Self {
+            default_fps: default_fps(),
+            lcds: Vec::new(),
+            fan_curves: Vec::new(),
+            fans: None,
+        }
+    }
+}
+
+fn default_fps() -> f32 {
+    30.0
+}
+
+impl AppConfig {
+    pub fn load(path: &Path) -> Result<Self> {
+        let file = File::open(path).with_context(|| format!("opening {}", path.display()))?;
+        let reader = BufReader::new(file);
+        let mut cfg: AppConfig = serde_json::from_reader(reader)
+            .with_context(|| format!("parsing {}", path.display()))?;
+
+        let base_dir = path
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| PathBuf::from("."));
+
+        let mut seen = HashSet::new();
+        for device in &mut cfg.lcds {
+            let identifier = if let Some(serial) = &device.serial {
+                format!("serial:{serial}")
+            } else if let Some(index) = device.index {
+                format!("index:{index}")
+            } else {
+                continue;
+            };
+
+            if !seen.insert(identifier.clone()) {
+                bail!("duplicate device identifier '{identifier}' in configuration");
+            }
+
+            if let Some(existing) = &device.path {
+                if existing.is_relative() {
+                    device.path = Some(base_dir.join(existing));
+                }
+            }
+
+            if let Some(sensor) = &mut device.sensor {
+                if let Some(font_path) = &sensor.font_path {
+                    if font_path.is_relative() {
+                        sensor.font_path = Some(base_dir.join(font_path));
+                    }
+                }
+            }
+
+            device.validate()?;
+        }
+
+        if cfg.default_fps <= 0.0 {
+            bail!("default_fps must be greater than zero");
+        }
+
+        // Normalize orientations to nearest 90°
+        for device in &mut cfg.lcds {
+            let normalized = (device.orientation % 360.0 + 360.0) % 360.0;
+            let snapped = ((normalized + 45.0) / 90.0).floor() * 90.0;
+            device.orientation = snapped % 360.0;
+        }
+
+        Ok(cfg)
+    }
+}
+
+pub type ConfigKey = String;
+
+pub fn config_identity(cfg: &LcdConfig) -> ConfigKey {
+    to_string(cfg).unwrap_or_else(|_| cfg.device_id())
+}
