@@ -1,4 +1,5 @@
 use anyhow::Result;
+use lianli_shared::rgb::{RgbEffect, RgbMode, RgbZoneInfo};
 use lianli_shared::screen::ScreenInfo;
 
 /// A device that can control fan speeds.
@@ -46,4 +47,55 @@ pub trait AioDevice: FanDevice {
     fn set_pump_speed(&self, duty: u8) -> Result<()>;
     fn read_pump_rpm(&self) -> Result<u16>;
     fn read_coolant_temp(&self) -> Result<f32>;
+}
+
+/// A device that can control RGB/LED effects.
+///
+/// Two control modes:
+/// - **Effect mode**: Set a hardware-native effect (mode + colors + speed + brightness).
+///   Used by wired devices (TL Fan, ENE 6K77, Galahad2) and the native GUI.
+/// - **Direct mode**: Set per-LED colors directly. Used by OpenRGB `UpdateLEDs`.
+///   For wired devices, maps to Static mode. For wireless, streams RGB frames via RF.
+pub trait RgbDevice: Send + Sync {
+    /// Supported LED effect modes for this device.
+    fn supported_modes(&self) -> Vec<RgbMode>;
+
+    /// Information about each independently controllable LED zone.
+    fn zone_info(&self) -> Vec<RgbZoneInfo>;
+
+    /// Total LED count across all zones.
+    fn total_led_count(&self) -> u16 {
+        self.zone_info().iter().map(|z| z.led_count).sum()
+    }
+
+    /// Set a zone's effect mode + parameters.
+    fn set_zone_effect(&self, zone: u8, effect: &RgbEffect) -> Result<()>;
+
+    /// Set all zones to the same effect.
+    fn set_all_effects(&self, effect: &RgbEffect) -> Result<()> {
+        for zone in 0..self.zone_info().len() as u8 {
+            self.set_zone_effect(zone, effect)?;
+        }
+        Ok(())
+    }
+
+    /// Set per-LED colors directly for a zone (used by OpenRGB `UpdateLEDs`).
+    ///
+    /// `colors` is a slice of RGB triplets, one per LED in the zone.
+    /// Default implementation maps to Static mode with the first color.
+    fn set_direct_colors(&self, zone: u8, colors: &[[u8; 3]]) -> Result<()> {
+        let color = colors.first().copied().unwrap_or([255, 255, 255]);
+        let effect = RgbEffect {
+            mode: RgbMode::Static,
+            colors: vec![color],
+            ..RgbEffect::default()
+        };
+        self.set_zone_effect(zone, &effect)
+    }
+
+    /// Whether this device supports true per-LED direct color control.
+    /// When false, `set_direct_colors` maps to Static mode with the first color.
+    fn supports_direct(&self) -> bool {
+        false
+    }
 }

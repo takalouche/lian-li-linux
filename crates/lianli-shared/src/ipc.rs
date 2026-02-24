@@ -1,6 +1,7 @@
 use crate::config::{AppConfig, LcdConfig};
 use crate::device_id::DeviceFamily;
 use crate::fan::FanConfig;
+use crate::rgb::{RgbAppConfig, RgbDeviceCapabilities, RgbEffect};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -26,6 +27,25 @@ pub enum IpcRequest {
         config: FanConfig,
     },
     GetTelemetry,
+    /// Get RGB capabilities for all devices.
+    GetRgbCapabilities,
+    /// Set RGB effect for a specific device zone.
+    SetRgbEffect {
+        device_id: String,
+        zone: u8,
+        effect: RgbEffect,
+    },
+    /// Set per-LED colors directly (used by OpenRGB integration).
+    SetRgbDirect {
+        device_id: String,
+        zone: u8,
+        /// RGB triplets, one per LED.
+        colors: Vec<[u8; 3]>,
+    },
+    /// Update the RGB configuration section.
+    SetRgbConfig {
+        config: RgbAppConfig,
+    },
     Subscribe,
     Ping,
 }
@@ -83,9 +103,11 @@ pub struct DeviceInfo {
     pub has_lcd: bool,
     pub has_fan: bool,
     pub has_pump: bool,
+    pub has_rgb: bool,
     pub fan_count: Option<u8>,
     pub per_fan_control: Option<bool>,
     pub mb_sync_support: bool,
+    pub rgb_zone_count: Option<u8>,
     pub screen_width: Option<u32>,
     pub screen_height: Option<u32>,
 }

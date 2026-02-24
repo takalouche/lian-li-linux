@@ -202,9 +202,11 @@ impl ServiceManager {
                 has_lcd: false, // LCD streaming uses USB bulk, not wireless
                 has_fan: dev.fan_count > 0,
                 has_pump: false,
+                has_rgb: true, // All wireless fans have RGB LEDs
                 fan_count: Some(dev.fan_count),
                 per_fan_control: Some(true),
                 mb_sync_support: false, // wireless fans don't support hardware MB sync
+                rgb_zone_count: Some(dev.fan_count), // One zone per fan
                 screen_width: None,
                 screen_height: None,
             });
@@ -264,9 +266,11 @@ impl ServiceManager {
                     has_lcd: det.family.has_lcd(),
                     has_fan: det.family.has_fan(),
                     has_pump: det.family.has_pump(),
+                    has_rgb: det.family.has_rgb(),
                     fan_count: None,
                     per_fan_control: None,
                     mb_sync_support: false,
+                    rgb_zone_count: None,
                     screen_width: screen.map(|s| s.width),
                     screen_height: screen.map(|s| s.height),
                 });
@@ -383,9 +387,11 @@ impl ServiceManager {
                                 has_lcd: false,
                                 has_fan: true,
                                 has_pump: false,
+                                has_rgb: det.family.has_rgb(),
                                 fan_count: Some(fan_count),
                                 per_fan_control: Some(per_fan),
                                 mb_sync_support: mb_sync,
+                                rgb_zone_count: None, // Set by RGB controller later
                                 screen_width: None,
                                 screen_height: None,
                             });

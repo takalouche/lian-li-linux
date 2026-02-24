@@ -261,6 +261,21 @@ impl DeviceFamily {
                 | Self::HydroShift2Lcd
         )
     }
+
+    pub fn has_rgb(self) -> bool {
+        matches!(
+            self,
+            Self::Ene6k77
+                | Self::TlFan
+                | Self::Galahad2Trinity
+                | Self::Slv3Led
+                | Self::Slv3Lcd
+                | Self::Tlv2Lcd
+                | Self::Tlv2Led
+                | Self::SlInf
+                | Self::Clv1
+        )
+    }
 }
 
 /// Look up a device family by VID/PID.

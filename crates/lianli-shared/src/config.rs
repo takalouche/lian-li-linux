@@ -1,5 +1,6 @@
 use crate::fan::{FanConfig, FanCurve};
 use crate::media::{MediaType, SensorDescriptor};
+use crate::rgb::RgbAppConfig;
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::to_string;
@@ -90,6 +91,8 @@ pub struct AppConfig {
     pub fan_curves: Vec<FanCurve>,
     #[serde(default)]
     pub fans: Option<FanConfig>,
+    #[serde(default)]
+    pub rgb: Option<RgbAppConfig>,
 }
 
 impl Default for AppConfig {
@@ -99,6 +102,7 @@ impl Default for AppConfig {
             lcds: Vec::new(),
             fan_curves: Vec::new(),
             fans: None,
+            rgb: None,
         }
     }
 }
