@@ -1,9 +1,13 @@
 use crate::config_watcher::ConfigWatcher;
 use crate::fan_controller::FanController;
 use crate::ipc_server::{self, DaemonState};
+use crate::rgb_controller::RgbController;
 use anyhow::Result;
 use lianli_devices::crypto::PacketBuilder;
-use lianli_devices::detect::{enumerate_devices, enumerate_hid_devices, find_wireless_lcd_devices, open_fan_device};
+use lianli_devices::detect::{
+    enumerate_devices, enumerate_hid_devices, find_wireless_lcd_devices, open_fan_device,
+    open_rgb_device,
+};
 use lianli_devices::slv3_lcd::Slv3LcdDevice;
 use lianli_devices::traits::FanDevice;
 use lianli_devices::wireless::WirelessController;
@@ -35,6 +39,7 @@ pub struct ServiceManager {
     wireless: WirelessController,
     packet_builder: PacketBuilder,
     fan_controller: Option<FanController>,
+    rgb_controller: Option<Arc<Mutex<RgbController>>>,
     /// Per-port DeviceInfo for wired fan devices (populated by open_wired_fan_devices).
     wired_fan_device_info: Vec<DeviceInfo>,
     /// Shared reference to wired fan device handles (for RPM reading).
@@ -59,6 +64,7 @@ impl ServiceManager {
             wireless: WirelessController::new(),
             packet_builder: PacketBuilder::new(),
             fan_controller: None,
+            rgb_controller: None,
             wired_fan_device_info: Vec::new(),
             wired_fan_devices: Arc::new(HashMap::new()),
             last_config_check: Instant::now() - CONFIG_POLL_INTERVAL,
@@ -108,6 +114,7 @@ impl ServiceManager {
         self.sync_ipc_state();
         self.try_wireless();
         self.open_wired_fan_devices();
+        self.init_rgb_controller();
         self.start_fan_control();
 
         while self.running {
@@ -124,6 +131,7 @@ impl ServiceManager {
                     if self.load_config(true) {
                         self.last_device_scan = Instant::now() - DEVICE_POLL_INTERVAL;
                         self.start_fan_control();
+                        self.apply_rgb_config();
                         self.sync_ipc_state();
                     }
                 }
@@ -134,6 +142,7 @@ impl ServiceManager {
                 if self.load_config(false) {
                     self.last_device_scan = Instant::now() - DEVICE_POLL_INTERVAL;
                     self.start_fan_control();
+                    self.apply_rgb_config();
                     self.sync_ipc_state();
                 }
             }
@@ -338,6 +347,66 @@ impl ServiceManager {
         let mut controller = FanController::new(fan_config, fan_curves, wireless, wired_devices);
         controller.start();
         self.fan_controller = Some(controller);
+    }
+
+    /// Initialize the RGB controller with wired HID RGB devices and wireless controller.
+    fn init_rgb_controller(&mut self) {
+        let mut wired_rgb: HashMap<String, Box<dyn lianli_devices::traits::RgbDevice>> =
+            HashMap::new();
+
+        let api = match hidapi::HidApi::new() {
+            Ok(api) => api,
+            Err(err) => {
+                warn!("Failed to initialize HID API for RGB devices: {err}");
+                return;
+            }
+        };
+
+        for det in enumerate_hid_devices(&api) {
+            if let Some(result) = open_rgb_device(&api, &det) {
+                let device_id = det
+                    .serial
+                    .clone()
+                    .unwrap_or_else(|| format!("hid:{:04x}:{:04x}", det.vid, det.pid));
+                match result {
+                    Ok(ctrl) => {
+                        info!("Opened {} as RGB device: {device_id}", det.name);
+                        wired_rgb.insert(device_id, ctrl);
+                    }
+                    Err(err) => warn!("Failed to init RGB for {}: {err}", det.name),
+                }
+            }
+        }
+
+        let wireless = if self.wireless.has_discovered_devices() {
+            Some(Arc::new(self.wireless.clone()))
+        } else {
+            None
+        };
+
+        let mut controller = RgbController::new(wired_rgb, wireless);
+
+        // Apply initial RGB config if available
+        if let Some(ref cfg) = self.config {
+            if let Some(ref rgb_cfg) = cfg.rgb {
+                controller.apply_config(rgb_cfg);
+            }
+        }
+
+        let rgb_arc = Arc::new(Mutex::new(controller));
+        self.rgb_controller = Some(Arc::clone(&rgb_arc));
+
+        // Share with IPC state
+        self.ipc_state.lock().rgb_controller = Some(rgb_arc);
+    }
+
+    /// Apply RGB config from the current AppConfig to the RGB controller.
+    fn apply_rgb_config(&self) {
+        if let (Some(ref rgb), Some(ref cfg)) = (&self.rgb_controller, &self.config) {
+            if let Some(ref rgb_cfg) = cfg.rgb {
+                rgb.lock().apply_config(rgb_cfg);
+            }
+        }
     }
 
     /// Enumerate and open all wired HID fan devices on the system.

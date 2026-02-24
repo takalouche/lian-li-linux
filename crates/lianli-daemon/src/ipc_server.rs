@@ -3,6 +3,7 @@
 //! Protocol: newline-delimited JSON (one request → one response per connection).
 //! The GUI polls periodically for telemetry. Config writes go through IPC.
 
+use crate::rgb_controller::RgbController;
 use lianli_shared::config::AppConfig;
 use lianli_shared::ipc::{DeviceInfo, IpcRequest, IpcResponse, TelemetrySnapshot};
 use parking_lot::Mutex;
@@ -28,6 +29,8 @@ pub struct DaemonState {
     pub telemetry: TelemetrySnapshot,
     /// Set by IPC when a config write comes in; main loop checks and clears.
     pub config_reload_pending: bool,
+    /// RGB controller, set once devices are opened.
+    pub rgb_controller: Option<Arc<Mutex<RgbController>>>,
 }
 
 impl DaemonState {
@@ -38,6 +41,7 @@ impl DaemonState {
             devices: Vec::new(),
             telemetry: TelemetrySnapshot::default(),
             config_reload_pending: false,
+            rgb_controller: None,
         }
     }
 }
@@ -227,8 +231,13 @@ fn handle_request(request: IpcRequest, state: &Arc<Mutex<DaemonState>>) -> IpcRe
         }
 
         IpcRequest::GetRgbCapabilities => {
-            // TODO: collect from RGB controller
-            IpcResponse::ok(serde_json::json!([]))
+            let state = state.lock();
+            if let Some(ref rgb) = state.rgb_controller {
+                let caps = rgb.lock().capabilities();
+                IpcResponse::ok(&caps)
+            } else {
+                IpcResponse::ok(serde_json::json!([]))
+            }
         }
 
         IpcRequest::SetRgbEffect {
@@ -236,9 +245,15 @@ fn handle_request(request: IpcRequest, state: &Arc<Mutex<DaemonState>>) -> IpcRe
             zone,
             effect,
         } => {
-            // TODO: forward to RGB controller
-            debug!("SetRgbEffect for {device_id} zone {zone}: {:?}", effect.mode);
-            IpcResponse::ok(serde_json::json!(null))
+            let state = state.lock();
+            if let Some(ref rgb) = state.rgb_controller {
+                match rgb.lock().set_effect(&device_id, zone, &effect) {
+                    Ok(()) => IpcResponse::ok(serde_json::json!(null)),
+                    Err(e) => IpcResponse::error(format!("RGB effect error: {e}")),
+                }
+            } else {
+                IpcResponse::error("RGB controller not initialized")
+            }
         }
 
         IpcRequest::SetRgbDirect {
@@ -246,9 +261,15 @@ fn handle_request(request: IpcRequest, state: &Arc<Mutex<DaemonState>>) -> IpcRe
             zone,
             colors,
         } => {
-            // TODO: forward to RGB controller
-            debug!("SetRgbDirect for {device_id} zone {zone}: {} LEDs", colors.len());
-            IpcResponse::ok(serde_json::json!(null))
+            let state = state.lock();
+            if let Some(ref rgb) = state.rgb_controller {
+                match rgb.lock().set_direct_colors(&device_id, zone, &colors) {
+                    Ok(()) => IpcResponse::ok(serde_json::json!(null)),
+                    Err(e) => IpcResponse::error(format!("RGB direct error: {e}")),
+                }
+            } else {
+                IpcResponse::error("RGB controller not initialized")
+            }
         }
 
         IpcRequest::SetRgbConfig { config } => {

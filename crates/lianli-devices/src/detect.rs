@@ -193,6 +193,53 @@ pub fn open_fan_device(
     }
 }
 
+/// Open a detected HID device as an RGB controller.
+///
+/// Returns `None` if the family doesn't support RGB control via HID,
+/// or `Err` if opening/init fails.
+/// Opens a separate HID handle so it can coexist with fan control.
+pub fn open_rgb_device(
+    api: &HidApi,
+    det: &DetectedHidDevice,
+) -> Option<Result<Box<dyn crate::traits::RgbDevice>>> {
+    if !det.family.has_rgb() {
+        return None;
+    }
+    match det.family {
+        DeviceFamily::TlFan => {
+            let hid_dev = match api.open_path(&det.path) {
+                Ok(d) => d,
+                Err(e) => return Some(Err(anyhow::anyhow!("HID open for RGB: {e}"))),
+            };
+            Some(
+                crate::tl_fan::TlFanController::new(hid_dev)
+                    .map(|c| Box::new(c) as Box<dyn crate::traits::RgbDevice>),
+            )
+        }
+        DeviceFamily::Ene6k77 => {
+            let hid_dev = match api.open_path(&det.path) {
+                Ok(d) => d,
+                Err(e) => return Some(Err(anyhow::anyhow!("HID open for RGB: {e}"))),
+            };
+            Some(
+                crate::ene6k77::Ene6k77Controller::new(hid_dev, det.pid)
+                    .map(|c| Box::new(c) as Box<dyn crate::traits::RgbDevice>),
+            )
+        }
+        DeviceFamily::Galahad2Trinity => {
+            let hid_dev = match api.open_path(&det.path) {
+                Ok(d) => d,
+                Err(e) => return Some(Err(anyhow::anyhow!("HID open for RGB: {e}"))),
+            };
+            Some(
+                crate::galahad2_trinity::Galahad2TrinityController::new(hid_dev, det.pid)
+                    .map(|c| Box::new(c) as Box<dyn crate::traits::RgbDevice>),
+            )
+        }
+        _ => None,
+    }
+}
+
 /// Find LCD devices (SLV3/TLV2 wireless LCD fans via USB bulk).
 pub fn find_wireless_lcd_devices() -> Result<Vec<Device<GlobalContext>>> {
     let devices = rusb::devices()?;
