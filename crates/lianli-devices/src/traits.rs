@@ -107,6 +107,16 @@ pub trait RgbDevice: Send + Sync {
         vec![]
     }
 
+    /// Whether this device supports fan direction (swap left/right, swap top/bottom).
+    fn supports_direction(&self) -> bool {
+        false
+    }
+
+    /// Set fan direction (orientation) for a specific zone.
+    fn set_fan_direction(&self, _zone: u8, _swap_lr: bool, _swap_tb: bool) -> Result<()> {
+        anyhow::bail!("Fan direction not supported by this device")
+    }
+
     /// Whether this device supports motherboard ARGB sync (passthrough from MB header).
     fn supports_mb_rgb_sync(&self) -> bool {
         false

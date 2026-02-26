@@ -171,6 +171,7 @@ export interface RgbDeviceCapabilities {
   supports_mb_rgb_sync: boolean;
   total_led_count: number;
   supported_scopes: RgbScope[][];
+  supports_direction: boolean;
 }
 
 export const RGB_MODE_NAMES: Record<RgbMode, string> = {

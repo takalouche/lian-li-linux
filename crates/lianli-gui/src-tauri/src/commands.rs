@@ -78,6 +78,23 @@ pub fn set_mb_rgb_sync(device_id: String, enabled: bool) -> Result<(), String> {
 }
 
 #[tauri::command]
+pub fn set_fan_direction(
+    device_id: String,
+    zone: u8,
+    swap_lr: bool,
+    swap_tb: bool,
+) -> Result<(), String> {
+    let resp = ipc_client::send_request(&IpcRequest::SetFanDirection {
+        device_id,
+        zone,
+        swap_lr,
+        swap_tb,
+    })?;
+    ipc_client::unwrap_response::<serde_json::Value>(resp)?;
+    Ok(())
+}
+
+#[tauri::command]
 pub fn set_rgb_config(config: RgbAppConfig) -> Result<(), String> {
     let resp = ipc_client::send_request(&IpcRequest::SetRgbConfig { config })?;
     ipc_client::unwrap_response::<serde_json::Value>(resp)?;

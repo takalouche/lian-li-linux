@@ -47,6 +47,13 @@ pub enum IpcRequest {
         device_id: String,
         enabled: bool,
     },
+    /// Set fan direction (swap LR/TB) for a device zone.
+    SetFanDirection {
+        device_id: String,
+        zone: u8,
+        swap_lr: bool,
+        swap_tb: bool,
+    },
     /// Update the RGB configuration section.
     SetRgbConfig {
         config: RgbAppConfig,

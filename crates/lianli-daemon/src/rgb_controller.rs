@@ -118,6 +118,20 @@ impl RgbController {
                         dev_cfg.device_id, zone_cfg.zone_index
                     );
                 }
+                // Apply fan direction if the device supports it
+                if zone_cfg.swap_lr || zone_cfg.swap_tb {
+                    if let Err(e) = self.set_fan_direction(
+                        &dev_cfg.device_id,
+                        zone_cfg.zone_index,
+                        zone_cfg.swap_lr,
+                        zone_cfg.swap_tb,
+                    ) {
+                        warn!(
+                            "Failed to apply fan direction to {} zone {}: {e}",
+                            dev_cfg.device_id, zone_cfg.zone_index
+                        );
+                    }
+                }
             }
         }
     }
@@ -228,6 +242,7 @@ impl RgbController {
                 supports_mb_rgb_sync: dev.supports_mb_rgb_sync(),
                 total_led_count: dev.total_led_count(),
                 supported_scopes: dev.supported_scopes(),
+                supports_direction: dev.supports_direction(),
             });
         }
 
@@ -251,6 +266,7 @@ impl RgbController {
                 supports_mb_rgb_sync: false,
                 total_led_count: total_leds,
                 supported_scopes: vec![],
+                supports_direction: false,
             });
         }
 
@@ -269,6 +285,25 @@ impl RgbController {
             }
             dev.set_mb_rgb_sync(enabled)?;
             info!("MB RGB sync {}: {device_id}", if enabled { "enabled" } else { "disabled" });
+            return Ok(());
+        }
+        anyhow::bail!("RGB device not found: {device_id}");
+    }
+
+    /// Set fan direction (swap LR/TB) for a specific device zone.
+    pub fn set_fan_direction(
+        &self,
+        device_id: &str,
+        zone: u8,
+        swap_lr: bool,
+        swap_tb: bool,
+    ) -> anyhow::Result<()> {
+        if let Some(dev) = self.wired.get(device_id) {
+            if !dev.supports_direction() {
+                anyhow::bail!("Device {device_id} does not support fan direction");
+            }
+            dev.set_fan_direction(zone, swap_lr, swap_tb)?;
+            debug!("Set fan direction on {device_id} zone {zone}: swap_lr={swap_lr} swap_tb={swap_tb}");
             return Ok(());
         }
         anyhow::bail!("RGB device not found: {device_id}");

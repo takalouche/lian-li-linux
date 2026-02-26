@@ -20,6 +20,7 @@ fn main() {
             commands::get_rgb_capabilities,
             commands::set_rgb_effect,
             commands::set_mb_rgb_sync,
+            commands::set_fan_direction,
             commands::set_rgb_config,
             commands::pick_media_file,
         ])

@@ -284,6 +284,23 @@ fn handle_request(request: IpcRequest, state: &Arc<Mutex<DaemonState>>) -> IpcRe
             }
         }
 
+        IpcRequest::SetFanDirection {
+            device_id,
+            zone,
+            swap_lr,
+            swap_tb,
+        } => {
+            let state = state.lock();
+            if let Some(ref rgb) = state.rgb_controller {
+                match rgb.lock().set_fan_direction(&device_id, zone, swap_lr, swap_tb) {
+                    Ok(()) => IpcResponse::ok(serde_json::json!(null)),
+                    Err(e) => IpcResponse::error(format!("Fan direction error: {e}")),
+                }
+            } else {
+                IpcResponse::error("RGB controller not initialized")
+            }
+        }
+
         IpcRequest::SetRgbConfig { config } => {
             let mut state = state.lock();
             let app_config = state.config.get_or_insert_with(AppConfig::default);

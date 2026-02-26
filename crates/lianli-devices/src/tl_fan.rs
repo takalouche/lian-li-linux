@@ -660,6 +660,17 @@ impl RgbDevice for TlFanPortDevice {
         vec![vec![RgbScope::All, RgbScope::Top, RgbScope::Bottom]; self.fan_count as usize]
     }
 
+    fn supports_direction(&self) -> bool {
+        true
+    }
+
+    fn set_fan_direction(&self, zone: u8, swap_lr: bool, swap_tb: bool) -> Result<()> {
+        if zone >= self.fan_count {
+            bail!("Zone {zone} out of range (port {} has {} fans)", self.port, self.fan_count);
+        }
+        self.controller.set_fan_direction(self.port, zone, swap_lr, swap_tb)
+    }
+
     fn supports_mb_rgb_sync(&self) -> bool {
         true
     }

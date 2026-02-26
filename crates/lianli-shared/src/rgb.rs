@@ -325,4 +325,7 @@ pub struct RgbDeviceCapabilities {
     pub total_led_count: u16,
     /// Supported scopes per zone. Empty vec = only "All" (no selector shown).
     pub supported_scopes: Vec<Vec<RgbScope>>,
+    /// Whether this device supports fan direction (swap LR/TB).
+    #[serde(default)]
+    pub supports_direction: bool,
 }

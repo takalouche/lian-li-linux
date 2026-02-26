@@ -19,6 +19,7 @@ const emit = defineEmits<{
   (e: "zone-update", deviceId: string, zoneIndex: number, effect: RgbEffect): void;
   (e: "apply-to-all", deviceId: string, effect: RgbEffect): void;
   (e: "mb-rgb-sync", deviceId: string, enabled: boolean): void;
+  (e: "direction-update", deviceId: string, zoneIndex: number, swapLr: boolean, swapTb: boolean): void;
 }>();
 
 const expandedZone = ref<number | null>(null);
@@ -112,6 +113,21 @@ function updateScope(zoneIndex: number, scope: RgbScope) {
 
 function scopesForZone(zoneIndex: number): RgbScope[] {
   return props.capabilities.supported_scopes?.[zoneIndex] ?? [];
+}
+
+function directionFor(zoneIndex: number): { swap_lr: boolean; swap_tb: boolean } {
+  const zone = props.deviceConfig.zones.find((z) => z.zone_index === zoneIndex);
+  return { swap_lr: zone?.swap_lr ?? false, swap_tb: zone?.swap_tb ?? false };
+}
+
+function toggleSwapLr(zoneIndex: number) {
+  const dir = directionFor(zoneIndex);
+  emit("direction-update", props.capabilities.device_id, zoneIndex, !dir.swap_lr, dir.swap_tb);
+}
+
+function toggleSwapTb(zoneIndex: number) {
+  const dir = directionFor(zoneIndex);
+  emit("direction-update", props.capabilities.device_id, zoneIndex, dir.swap_lr, !dir.swap_tb);
 }
 
 function applyToAll() {
@@ -346,6 +362,40 @@ function rgbToHex(color: [number, number, number]): string {
                 {{ s }}
               </button>
             </div>
+          </div>
+
+          <!-- Fan Direction (swap LR / swap TB) -->
+          <div v-if="capabilities.supports_direction" class="flex gap-3">
+            <button
+              @click="toggleSwapLr(idx)"
+              class="flex items-center gap-1.5 px-2.5 py-1 text-xs rounded-lg border transition-all cursor-pointer"
+              :class="
+                directionFor(idx).swap_lr
+                  ? 'bg-blue-50 dark:bg-blue-900/30 border-blue-300 dark:border-blue-700 text-blue-700 dark:text-blue-300'
+                  : 'bg-white dark:bg-gray-700 border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-600'
+              "
+            >
+              <span
+                class="inline-block w-2 h-2 rounded-full"
+                :class="directionFor(idx).swap_lr ? 'bg-blue-500' : 'bg-gray-400'"
+              />
+              Swap L/R
+            </button>
+            <button
+              @click="toggleSwapTb(idx)"
+              class="flex items-center gap-1.5 px-2.5 py-1 text-xs rounded-lg border transition-all cursor-pointer"
+              :class="
+                directionFor(idx).swap_tb
+                  ? 'bg-blue-50 dark:bg-blue-900/30 border-blue-300 dark:border-blue-700 text-blue-700 dark:text-blue-300'
+                  : 'bg-white dark:bg-gray-700 border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-600'
+              "
+            >
+              <span
+                class="inline-block w-2 h-2 rounded-full"
+                :class="directionFor(idx).swap_tb ? 'bg-blue-500' : 'bg-gray-400'"
+              />
+              Swap T/B
+            </button>
           </div>
         </div>
       </div>

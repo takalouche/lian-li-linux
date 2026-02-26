@@ -118,6 +118,43 @@ function handleApplyToAll(deviceId: string, effect: RgbEffect) {
   }
 }
 
+function handleDirectionUpdate(
+  deviceId: string,
+  zoneIndex: number,
+  swapLr: boolean,
+  swapTb: boolean
+) {
+  const cfg = { ...rgbConfig.value };
+  let devCfg = cfg.devices.find((d) => d.device_id === deviceId);
+  if (!devCfg) {
+    devCfg = { device_id: deviceId, mb_rgb_sync: false, zones: [] };
+    cfg.devices.push(devCfg);
+  }
+
+  let zoneCfg = devCfg.zones.find((z) => z.zone_index === zoneIndex);
+  if (!zoneCfg) {
+    zoneCfg = {
+      zone_index: zoneIndex,
+      effect: { mode: "Static" as const, colors: [[255, 255, 255]], speed: 2, brightness: 4, direction: "Clockwise" as const, scope: "All" as const },
+      swap_lr: swapLr,
+      swap_tb: swapTb,
+    };
+    devCfg.zones.push(zoneCfg);
+  } else {
+    zoneCfg.swap_lr = swapLr;
+    zoneCfg.swap_tb = swapTb;
+  }
+
+  configStore.updateRgbConfig(cfg);
+
+  invoke("set_fan_direction", {
+    deviceId,
+    zone: zoneIndex,
+    swapLr,
+    swapTb,
+  }).catch((e: unknown) => console.error("Failed to set fan direction:", e));
+}
+
 function handleMbRgbSync(deviceId: string, enabled: boolean) {
   const cfg = { ...rgbConfig.value };
 
@@ -302,6 +339,7 @@ watch(() => deviceStore.daemonConnected, (connected) => {
         @zone-update="handleZoneUpdate"
         @apply-to-all="handleApplyToAll"
         @mb-rgb-sync="handleMbRgbSync"
+        @direction-update="handleDirectionUpdate"
       />
     </div>
   </div>
