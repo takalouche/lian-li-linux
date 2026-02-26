@@ -37,7 +37,7 @@ onUnmounted(() => {
       >
         Daemon not running. Start it with:
         <code class="ml-1 font-mono text-xs bg-amber-100 dark:bg-amber-800/50 px-1.5 py-0.5 rounded">
-          sudo systemctl start lianli-daemon
+          systemctl --user start lianli-daemon
         </code>
       </div>
       <router-view />
