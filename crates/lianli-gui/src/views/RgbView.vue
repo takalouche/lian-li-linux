@@ -70,22 +70,39 @@ function handleZoneUpdate(
     cfg.devices.push(devCfg);
   }
 
-  let zoneCfg = devCfg.zones.find((z) => z.zone_index === zoneIndex);
-  if (!zoneCfg) {
-    zoneCfg = {
-      zone_index: zoneIndex,
-      effect,
-      swap_lr: false,
-      swap_tb: false,
-    };
-    devCfg.zones.push(zoneCfg);
-  } else {
-    zoneCfg.effect = effect;
+  // When group light is used (animated modes or scoped), the hardware applies
+  // the same effect to all fans on the port. Reflect this in the GUI.
+  const isPerFan =
+    ["Static", "Direct", "Off"].includes(effect.mode) &&
+    (!effect.scope || effect.scope === "All");
+  const cap = capsFor(deviceId);
+  const hasGroupZones =
+    cap?.supported_scopes?.some((scopes) =>
+      scopes.some((s) => s === "Top" || s === "Bottom")
+    ) ?? false;
+  const zonesToUpdate =
+    !isPerFan && hasGroupZones && cap
+      ? cap.zones.map((_: unknown, i: number) => i)
+      : [zoneIndex];
+
+  for (const zi of zonesToUpdate) {
+    let zoneCfg = devCfg.zones.find((z) => z.zone_index === zi);
+    if (!zoneCfg) {
+      zoneCfg = {
+        zone_index: zi,
+        effect,
+        swap_lr: false,
+        swap_tb: false,
+      };
+      devCfg.zones.push(zoneCfg);
+    } else {
+      zoneCfg.effect = effect;
+    }
   }
 
   configStore.updateRgbConfig(cfg);
 
-  // Also send immediate effect via IPC
+  // Send HID command for the clicked zone (backend handles hardware broadcast)
   invoke("set_rgb_effect", {
     deviceId,
     zone: zoneIndex,

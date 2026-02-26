@@ -168,34 +168,34 @@ impl TlFanController {
         Ok(hs)
     }
 
-    /// Set up fan groups via SetFanGroup (0xAD) so the firmware recognizes all fans
-    /// for per-fan LED control. From decompiled TLFanDevice.cs: SetFanGroup() sends
-    /// group membership before SetFanLight() can address individual fans.
+    /// Set up fan groups via SetFanGroup (0xAD).
     ///
-    /// For each port with fans, we register one group containing all fans on that port,
-    /// with both TopSide and BottomSide enabled.
-    /// Group number formula from L-Connect: (port * 4 + groupIndex) * 2 + bottomSide
+    /// Two groups per port for side mode support:
+    ///   - base (top LEDs): `(port * 4) * 2`
+    ///   - base+1 (bottom LEDs): `(port * 4) * 2 + 1`
     fn setup_fan_groups(&self, port_fan_counts: &[u8; 4]) -> Result<()> {
         for (port, &fan_count) in port_fan_counts.iter().enumerate() {
             if fan_count == 0 {
                 continue;
             }
 
-            // Group number for port P, group 0, top side = (P * 4) * 2
-            let group_number = (port * 4 * 2) as u8;
+            let base_group = (port * 4 * 2) as u8;
 
-            // Payload: [groupNum, count, fanParam0, fanParam1, ...]
-            // Each fan param byte: [7]TopSide | [6]BottomSide | [5:4]Port | [3:0]FanIndex
-            let mut data = vec![group_number, fan_count];
+            // Top side group
+            let mut top = vec![base_group, fan_count];
             for fan in 0..fan_count {
-                let param = (1u8 << 7) | (1u8 << 6) | ((port as u8) << 4) | fan;
-                data.push(param);
+                top.push((1u8 << 7) | ((port as u8) << 4) | fan);
             }
+            self.send_command_quiet(CMD_SET_FAN_GROUP, &top)?;
 
-            self.send_command_quiet(CMD_SET_FAN_GROUP, &data)?;
-            debug!(
-                "Set fan group {group_number} for port {port}: {fan_count} fans"
-            );
+            // Bottom side group
+            let mut bot = vec![base_group + 1, fan_count];
+            for fan in 0..fan_count {
+                bot.push((1u8 << 6) | ((port as u8) << 4) | fan);
+            }
+            self.send_command_quiet(CMD_SET_FAN_GROUP, &bot)?;
+
+            debug!("Set fan groups {base_group}/{} for port {port}: {fan_count} fans", base_group + 1);
         }
         Ok(())
     }
@@ -637,28 +637,21 @@ impl RgbDevice for TlFanPortDevice {
             bail!("Zone {zone} out of range (port {} has {} fans)", self.port, self.fan_count);
         }
 
-        // Animated effects use SetFanGroupLight (0xB0) for synced animation across the port.
-        // Static/Direct/Off use per-fan SetFanLight (0xA3) for individual color control.
-        match effect.mode {
-            RgbMode::Static | RgbMode::Direct | RgbMode::Off => {
-                self.controller.set_fan_light(self.port, zone, effect, false)
-            }
+        let base_group = (self.port as u16 * 4 * 2) as u8;
+        let scoped = !matches!(effect.scope, RgbScope::All);
+
+        // Per-fan light (0xA3) has no side bits — only usable with scope=All.
+        // Scoped modes always use group light (0xB0) which targets the correct side group.
+        if !scoped && matches!(effect.mode, RgbMode::Static | RgbMode::Direct | RgbMode::Off) {
+            return self.controller.set_fan_light(self.port, zone, effect, false);
+        }
+
+        match effect.scope {
+            RgbScope::Bottom => self.controller.set_group_light(base_group + 1, effect),
+            RgbScope::Top => self.controller.set_group_light(base_group, effect),
             _ => {
-                // Group number: (port * 4 + groupIndex) * 2 + bottomSide
-                // Top = base, Bottom = base + 1, All = send to both
-                let base_group = (self.port as u16 * 4 * 2) as u8;
-                match effect.scope {
-                    RgbScope::Bottom => {
-                        self.controller.set_group_light(base_group + 1, effect)
-                    }
-                    RgbScope::Top => {
-                        self.controller.set_group_light(base_group, effect)
-                    }
-                    _ => {
-                        self.controller.set_group_light(base_group, effect)?;
-                        self.controller.set_group_light(base_group + 1, effect)
-                    }
-                }
+                self.controller.set_group_light(base_group, effect)?;
+                self.controller.set_group_light(base_group + 1, effect)
             }
         }
     }

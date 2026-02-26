@@ -23,11 +23,10 @@ const emit = defineEmits<{
 
 const expandedZone = ref<number | null>(null);
 
-const availableModes = computed(() =>
-  ["Off" as RgbMode, ...props.capabilities.supported_modes].filter(
-    (m) => m !== "Direct"
-  )
-);
+const availableModes = computed(() => {
+  const modes = props.capabilities.supported_modes.filter((m) => m !== "Direct");
+  return modes.includes("Off") ? modes : ["Off" as RgbMode, ...modes];
+});
 
 const directions: { value: RgbDirection; label: string }[] = [
   { value: "Clockwise", label: "CW" },
