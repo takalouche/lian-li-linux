@@ -31,6 +31,8 @@ export struct RgbDeviceData {
     mb-rgb-sync: bool,
     supports-mb-sync: bool,
     supports-direction: bool,
+    has-group-zones: bool,
+    synced: bool,
     supported-modes: [string],
     supported-scopes: [string],
     zones: [RgbZoneData],
@@ -146,6 +148,8 @@ component RgbZoneEditor inherits VerticalLayout {
         ToggleButton { label: "CCW"; active: root.zone.direction == "CounterClockwise"; clicked => { root.set-direction("CounterClockwise"); } }
         ToggleButton { label: "Up"; active: root.zone.direction == "Up"; clicked => { root.set-direction("Up"); } }
         ToggleButton { label: "Down"; active: root.zone.direction == "Down"; clicked => { root.set-direction("Down"); } }
+        ToggleButton { label: "Spread"; active: root.zone.direction == "Spread"; clicked => { root.set-direction("Spread"); } }
+        ToggleButton { label: "Gather"; active: root.zone.direction == "Gather"; clicked => { root.set-direction("Gather"); } }
     }
 
     // Scope buttons (if device has multiple scopes)
@@ -178,6 +182,7 @@ component RgbZoneEditor inherits VerticalLayout {
 component RgbDeviceCard inherits Card {
     in property <RgbDeviceData> device;
     in-out property <int> expanded-zone: -1;
+    vertical-stretch: 0;
 
     callback set-mode(string, int, string);
     callback set-speed(string, int, int);
@@ -224,6 +229,8 @@ component RgbDeviceCard inherits Card {
 
             for zone-data[zidx] in root.device.zones: VerticalLayout {
                 spacing: 0px;
+                // When synced and not zone 0, reduce opacity
+                opacity: root.device.synced && zidx != 0 ? 0.5 : 1.0;
 
                 // Zone header (click to expand)
                 Rectangle {
@@ -233,6 +240,8 @@ component RgbDeviceCard inherits Card {
 
                     TouchArea {
                         clicked => {
+                            // When synced, only zone 0 is expandable
+                            if root.device.synced && zidx != 0 { return; }
                             root.expanded-zone = root.expanded-zone == zidx ? -1 : zidx;
                         }
                     }
@@ -250,7 +259,8 @@ component RgbDeviceCard inherits Card {
                             width: 14px;
                         }
                         Text {
-                            text: zone-data.zone-name;
+                            // When synced, zone 0 shows "All Fans"
+                            text: root.device.synced && zidx == 0 ? "All Fans" : zone-data.zone-name;
                             font-size: 13px;
                             color: Theme.text-primary;
                             vertical-alignment: center;
@@ -267,11 +277,19 @@ component RgbDeviceCard inherits Card {
                             color: Theme.accent;
                             vertical-alignment: center;
                         }
+                        // Synced label for non-zone-0
+                        if root.device.synced && zidx != 0: Text {
+                            text: "SYNCED";
+                            font-size: 10px;
+                            font-weight: 600;
+                            color: #f59e0b;
+                            vertical-alignment: center;
+                        }
                     }
                 }
 
-                // Zone editor (expanded)
-                if root.expanded-zone == zidx: Rectangle {
+                // Zone editor (expanded) — only when not synced for non-zone-0
+                if root.expanded-zone == zidx && (!root.device.synced || zidx == 0): Rectangle {
                     border-radius: 4px;
                     background: Theme.card-background;
 
@@ -295,8 +313,8 @@ component RgbDeviceCard inherits Card {
                 }
             }
 
-            // Apply to all button
-            if root.device.zones.length > 1: HorizontalLayout {
+            // Apply to all button — hidden when synced (zone 0 already controls all)
+            if root.device.zones.length > 1 && !root.device.synced: HorizontalLayout {
                 alignment: end;
                 padding-top: 4px;
                 Button {
@@ -344,6 +362,7 @@ export component RgbPage inherits VerticalLayout {
         VerticalLayout {
             padding: 24px;
             spacing: 16px;
+            alignment: start;
 
             // OpenRGB status card
             Card {

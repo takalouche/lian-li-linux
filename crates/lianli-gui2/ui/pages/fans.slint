@@ -1,18 +1,17 @@
 import { Theme } from "../theme.slint";
 import { Card } from "../widgets.slint";
 import { PageHeader } from "../page_header.slint";
-import { FanCurveEditor, CurvePoint, LineSegment } from "../components/fan_curve_editor.slint";
+import { FanCurveEditor, CurvePoint, CurveSegment } from "../components/fan_curve_editor.slint";
 import { Button, ScrollView, ComboBox, Slider, LineEdit, SpinBox } from "std-widgets.slint";
 
-export { CurvePoint, LineSegment }
+export { CurvePoint, CurveSegment }
 
 export struct FanCurveData {
     name: string,
     temp-command: string,
     points: [CurvePoint],
-    curve-path: string,
-    clamp-left-path: string,
-    clamp-right-path: string,
+    curve-segments: [CurveSegment],
+    clamp-segments: [CurveSegment],
 }
 
 export struct FanSpeedSlot {
@@ -76,9 +75,8 @@ component FanCurveCard inherits Card {
             height: 200px;
             curve-name: root.curve.name;
             points: root.curve.points;
-            curve-path: root.curve.curve-path;
-            clamp-left-path: root.curve.clamp-left-path;
-            clamp-right-path: root.curve.clamp-right-path;
+            curve-segments: root.curve.curve-segments;
+            clamp-segments: root.curve.clamp-segments;
             point-moved(pidx, temp, speed) => { root.point-moved(root.index, pidx, temp, speed); }
             point-added(temp, speed) => { root.point-added(root.index, temp, speed); }
             point-removed(pidx) => { root.point-removed(root.index, pidx); }

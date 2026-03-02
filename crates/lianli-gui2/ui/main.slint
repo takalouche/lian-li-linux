@@ -1,12 +1,12 @@
 import { Theme } from "theme.slint";
 import { Sidebar } from "sidebar.slint";
 import { DevicesPage, DeviceData } from "pages/devices.slint";
-import { FansPage, FanCurveData, FanGroupData, FanSpeedSlot, CurvePoint, LineSegment } from "pages/fans.slint";
+import { FansPage, FanCurveData, FanGroupData, FanSpeedSlot, CurvePoint, CurveSegment } from "pages/fans.slint";
 import { LcdPage, LcdEntryData, LcdDeviceOption } from "pages/lcd.slint";
 import { RgbPage, RgbDeviceData, RgbZoneData, RgbColorData } from "pages/rgb.slint";
 import { SettingsPage } from "pages/settings.slint";
 
-export { DeviceData, FanCurveData, FanGroupData, FanSpeedSlot, CurvePoint, LineSegment }
+export { DeviceData, FanCurveData, FanGroupData, FanSpeedSlot, CurvePoint, CurveSegment }
 export { LcdEntryData, LcdDeviceOption }
 export { RgbDeviceData, RgbZoneData, RgbColorData }
 
@@ -104,7 +104,6 @@ export component MainWindow inherits Window {
 
             if root.current-page == 0: DevicesPage {
                 devices: root.devices;
-                streaming-active: root.streaming-active;
                 refresh => { root.refresh-devices(); }
             }
 

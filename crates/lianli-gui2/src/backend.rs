@@ -30,11 +30,14 @@ impl BackendHandle {
 }
 
 /// Start the backend thread. Returns a handle for sending commands.
-pub fn start(window: slint::Weak<crate::MainWindow>) -> BackendHandle {
+pub fn start(
+    window: slint::Weak<crate::MainWindow>,
+    shared: crate::Shared,
+) -> BackendHandle {
     let (tx, rx) = mpsc::channel::<BackendCommand>();
 
     std::thread::spawn(move || {
-        run_backend(window, rx);
+        run_backend(window, rx, shared);
     });
 
     BackendHandle { tx }
@@ -43,23 +46,24 @@ pub fn start(window: slint::Weak<crate::MainWindow>) -> BackendHandle {
 fn run_backend(
     window: slint::Weak<crate::MainWindow>,
     rx: mpsc::Receiver<BackendCommand>,
+    shared: crate::Shared,
 ) {
     let poll_interval = Duration::from_secs(2);
 
     // Initial load
-    poll_daemon(&window);
-    load_config(&window);
+    poll_daemon(&window, &shared);
+    load_config(&window, &shared);
 
     loop {
         // Check for commands (non-blocking with timeout = poll interval)
         match rx.recv_timeout(poll_interval) {
             Ok(BackendCommand::RefreshDevices) => {
-                poll_daemon(&window);
+                poll_daemon(&window, &shared);
             }
             Ok(BackendCommand::SaveConfig(config)) => {
                 save_config(&window, config);
                 // Reload so UI reflects saved state
-                load_config(&window);
+                load_config(&window, &shared);
             }
             Ok(BackendCommand::IpcRequest(req)) => {
                 if let Err(e) = ipc_client::send_request(&req) {
@@ -72,7 +76,7 @@ fn run_backend(
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 // Regular poll
-                poll_daemon(&window);
+                poll_daemon(&window, &shared);
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => {
                 tracing::info!("Backend channel disconnected, shutting down");
@@ -83,7 +87,7 @@ fn run_backend(
 }
 
 /// Poll daemon for device list and telemetry, push to UI.
-fn poll_daemon(window: &slint::Weak<crate::MainWindow>) {
+fn poll_daemon(window: &slint::Weak<crate::MainWindow>, shared: &crate::Shared) {
     let connected = ipc_client::is_daemon_running();
 
     let (devices, telemetry) = if connected {
@@ -99,6 +103,9 @@ fn poll_daemon(window: &slint::Weak<crate::MainWindow>) {
     } else {
         (Vec::new(), TelemetrySnapshot::default())
     };
+
+    // Update shared state devices
+    shared.lock().unwrap().devices = devices.clone();
 
     let device_count = devices.iter().filter(|d| !matches!(
         d.family,
@@ -130,7 +137,7 @@ fn poll_daemon(window: &slint::Weak<crate::MainWindow>) {
 }
 
 /// Load config and RGB capabilities from daemon, push all to UI.
-fn load_config(window: &slint::Weak<crate::MainWindow>) {
+fn load_config(window: &slint::Weak<crate::MainWindow>, shared: &crate::Shared) {
     let config: Option<AppConfig> = ipc_client::send_request(&IpcRequest::GetConfig)
         .and_then(ipc_client::unwrap_response)
         .ok();
@@ -143,6 +150,14 @@ fn load_config(window: &slint::Weak<crate::MainWindow>) {
     let devices: Vec<DeviceInfo> = ipc_client::send_request(&IpcRequest::ListDevices)
         .and_then(ipc_client::unwrap_response)
         .unwrap_or_default();
+
+    // Update shared state
+    {
+        let mut state = shared.lock().unwrap();
+        state.config = config.clone();
+        state.rgb_caps = rgb_caps.clone();
+        state.devices = devices.clone();
+    }
 
     if let Some(config) = config {
         let lcd_count = config.lcds.len() as i32;
@@ -172,11 +187,8 @@ fn load_config(window: &slint::Weak<crate::MainWindow>) {
                 let lcd_opts = conversions::lcd_device_options(&devices);
                 w.set_lcd_device_options(lcd_opts);
 
-                // Fan curves — use approximate plot dimensions for pixel coords
-                // (actual plot is dynamic, but points are relative to these)
-                let plot_w = 400.0;
-                let plot_h = 160.0;
-                let curves_model = conversions::fan_curves_to_model(&config.fan_curves, plot_w, plot_h);
+                // Fan curves
+                let curves_model = conversions::fan_curves_to_model(&config.fan_curves);
                 w.set_fan_curves(curves_model);
                 let names_model = conversions::curve_names_to_model(&config.fan_curves);
                 w.set_curve_names(names_model);

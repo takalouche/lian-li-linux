@@ -4,7 +4,7 @@ use lianli_shared::config::{AppConfig, LcdConfig};
 use lianli_shared::fan::{FanConfig, FanCurve, FanSpeed};
 use lianli_shared::ipc::{DeviceInfo, TelemetrySnapshot};
 use lianli_shared::media::MediaType;
-use lianli_shared::rgb::{RgbDeviceCapabilities, RgbMode};
+use lianli_shared::rgb::{RgbDeviceCapabilities, RgbMode, RgbScope};
 use slint::{ModelRc, SharedString, VecModel};
 
 /// Convert a DeviceInfo + telemetry data into the Slint DeviceData struct.
@@ -157,135 +157,72 @@ pub fn lcd_device_options(devices: &[DeviceInfo]) -> ModelRc<SharedString> {
 
 // ── Fan conversions ──────────────────────────────────────────────
 
-// Path commands use normalized [0,1] coordinates within the plot area.
-// Slint's Path interprets coordinates relative to the element's width/height.
 const TEMP_MIN: f32 = 20.0;
 const TEMP_MAX: f32 = 100.0;
-const SPEED_MIN: f32 = 0.0;
-const SPEED_MAX: f32 = 100.0;
 
-/// Normalized x [0,1] from temperature.
-fn temp_to_norm(temp: f32) -> f32 {
-    (temp - TEMP_MIN) / (TEMP_MAX - TEMP_MIN)
+/// Build line segments between consecutive sorted points.
+pub fn build_curve_segments(sorted: &[(f32, f32)]) -> Vec<super::CurveSegment> {
+    sorted
+        .windows(2)
+        .map(|w| super::CurveSegment {
+            from_temp: w[0].0,
+            from_speed: w[0].1,
+            to_temp: w[1].0,
+            to_speed: w[1].1,
+        })
+        .collect()
 }
 
-/// Normalized y [0,1] from speed (inverted: 100% = top = 0).
-fn speed_to_norm(speed: f32) -> f32 {
-    1.0 - (speed - SPEED_MIN) / (SPEED_MAX - SPEED_MIN)
-}
-
-/// Build an SVG path string for the curve polyline.
-fn build_curve_path(sorted: &[(f32, f32)]) -> String {
+/// Build clamp segments extending horizontally from the first/last point to axis edges.
+pub fn build_clamp_segments(sorted: &[(f32, f32)]) -> Vec<super::CurveSegment> {
+    let mut segs = Vec::new();
     if sorted.is_empty() {
-        return String::new();
-    }
-    let mut path = String::new();
-    for (i, &(temp, speed)) in sorted.iter().enumerate() {
-        let x = temp_to_norm(temp);
-        let y = speed_to_norm(speed);
-        if i == 0 {
-            path.push_str(&format!("M {x} {y}"));
-        } else {
-            path.push_str(&format!(" L {x} {y}"));
-        }
-    }
-    path
-}
-
-/// Build clamp line path extending from first point left to axis edge.
-fn build_clamp_left(sorted: &[(f32, f32)]) -> String {
-    if sorted.is_empty() {
-        return String::new();
+        return segs;
     }
     let first = sorted[0];
-    if first.0 <= TEMP_MIN {
-        return String::new();
-    }
-    let y = speed_to_norm(first.1);
-    let x_from = 0.0;
-    let x_to = temp_to_norm(first.0);
-    // Dashed line approximation: series of short segments
-    let _total = x_to - x_from;
-    let dash = 0.015_f32;
-    let gap = 0.01_f32;
-    let mut path = String::new();
-    let mut x = x_from;
-    let mut drawing = true;
-    while x < x_to {
-        let seg_end = (x + if drawing { dash } else { gap }).min(x_to);
-        if drawing {
-            if path.is_empty() {
-                path.push_str(&format!("M {x} {y}"));
-            } else {
-                path.push_str(&format!(" M {x} {y}"));
-            }
-            path.push_str(&format!(" L {seg_end} {y}"));
-        }
-        x = seg_end;
-        drawing = !drawing;
-    }
-    path
-}
-
-/// Build clamp line path extending from last point right to axis edge.
-fn build_clamp_right(sorted: &[(f32, f32)]) -> String {
-    if sorted.is_empty() {
-        return String::new();
+    if first.0 > TEMP_MIN {
+        segs.push(super::CurveSegment {
+            from_temp: TEMP_MIN,
+            from_speed: first.1,
+            to_temp: first.0,
+            to_speed: first.1,
+        });
     }
     let last = sorted[sorted.len() - 1];
-    if last.0 >= TEMP_MAX {
-        return String::new();
+    if last.0 < TEMP_MAX {
+        segs.push(super::CurveSegment {
+            from_temp: last.0,
+            from_speed: last.1,
+            to_temp: TEMP_MAX,
+            to_speed: last.1,
+        });
     }
-    let y = speed_to_norm(last.1);
-    let x_from = temp_to_norm(last.0);
-    let x_to = 1.0;
-    let dash = 0.015_f32;
-    let gap = 0.01_f32;
-    let mut path = String::new();
-    let mut x = x_from;
-    let mut drawing = true;
-    while x < x_to {
-        let seg_end = (x + if drawing { dash } else { gap }).min(x_to);
-        if drawing {
-            if path.is_empty() {
-                path.push_str(&format!("M {x} {y}"));
-            } else {
-                path.push_str(&format!(" M {x} {y}"));
-            }
-            path.push_str(&format!(" L {seg_end} {y}"));
-        }
-        x = seg_end;
-        drawing = !drawing;
-    }
-    path
+    segs
 }
 
-pub fn fan_curve_to_slint(curve: &FanCurve, plot_width: f32, plot_height: f32) -> super::FanCurveData {
-    let mut sorted_points: Vec<(f32, f32)> = curve.curve.clone();
-    sorted_points.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
-
-    let points: Vec<super::CurvePoint> = sorted_points
+pub fn fan_curve_to_slint(curve: &FanCurve) -> super::FanCurveData {
+    // Points in original order (pidx matches curve.curve index)
+    let points: Vec<super::CurvePoint> = curve
+        .curve
         .iter()
-        .map(|&(temp, speed)| super::CurvePoint {
-            temp,
-            speed,
-            px: temp_to_norm(temp) * plot_width,
-            py: speed_to_norm(speed) * plot_height,
-        })
+        .map(|&(temp, speed)| super::CurvePoint { temp, speed })
         .collect();
+
+    // Sort only for path/clamp generation
+    let mut sorted: Vec<(f32, f32)> = curve.curve.clone();
+    sorted.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
 
     super::FanCurveData {
         name: SharedString::from(&curve.name),
         temp_command: SharedString::from(&curve.temp_command),
         points: ModelRc::new(VecModel::from(points)),
-        curve_path: SharedString::from(build_curve_path(&sorted_points)),
-        clamp_left_path: SharedString::from(build_clamp_left(&sorted_points)),
-        clamp_right_path: SharedString::from(build_clamp_right(&sorted_points)),
+        curve_segments: ModelRc::new(VecModel::from(build_curve_segments(&sorted))),
+        clamp_segments: ModelRc::new(VecModel::from(build_clamp_segments(&sorted))),
     }
 }
 
-pub fn fan_curves_to_model(curves: &[FanCurve], plot_width: f32, plot_height: f32) -> ModelRc<super::FanCurveData> {
-    let items: Vec<_> = curves.iter().map(|c| fan_curve_to_slint(c, plot_width, plot_height)).collect();
+pub fn fan_curves_to_model(curves: &[FanCurve]) -> ModelRc<super::FanCurveData> {
+    let items: Vec<_> = curves.iter().map(fan_curve_to_slint).collect();
     ModelRc::new(VecModel::from(items))
 }
 
@@ -451,6 +388,22 @@ pub fn rgb_devices_to_model(
                 .map(|s| SharedString::from(s.as_str()))
                 .collect();
 
+            // Determine if device has group zones (Top/Bottom scopes)
+            let has_group_zones = cap.supported_scopes.iter().any(|scopes| {
+                scopes.iter().any(|s| matches!(s, RgbScope::Top | RgbScope::Bottom))
+            });
+
+            // Synced mode: has group zones and zone 0 has animated mode
+            let synced = if has_group_zones && !zones.is_empty() {
+                let z0_mode = zones[0].mode.as_str();
+                let z0_scope = zones[0].scope.as_str();
+                let is_per_fan = matches!(z0_mode, "Off" | "Static" | "Direct")
+                    && (z0_scope.is_empty() || z0_scope == "All");
+                !is_per_fan
+            } else {
+                false
+            };
+
             super::RgbDeviceData {
                 device_id: SharedString::from(&cap.device_id),
                 device_name: SharedString::from(&cap.device_name),
@@ -458,6 +411,8 @@ pub fn rgb_devices_to_model(
                 mb_rgb_sync: mb_rgb_sync,
                 supports_mb_sync: cap.supports_mb_rgb_sync,
                 supports_direction: cap.supports_direction,
+                has_group_zones,
+                synced,
                 supported_modes: ModelRc::new(VecModel::from(supported_modes)),
                 supported_scopes: ModelRc::new(VecModel::from(supported_scopes)),
                 zones: ModelRc::new(VecModel::from(zones)),
