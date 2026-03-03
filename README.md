@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="crates/lianli-gui/src-tauri/icons/icon.svg" width="128" height="128" alt="Lian Li Linux">
+  <img src="assets/icons/icon.svg" width="128" height="128" alt="Lian Li Linux">
 </p>
 
 <h1 align="center">Lian Li Linux</h1>
@@ -45,7 +45,7 @@ lianli-daemon          User service - fan control loop + LCD streaming
   lianli-media         Image/video/GIF encoding, sensor gauge rendering
   lianli-shared        IPC types, config schema, device IDs
 
-lianli-gui             Tauri 2 + Vue 3 desktop app - connects to daemon via Unix socket
+lianli-gui             Slint desktop app - connects to daemon via Unix socket
 ```
 
 The daemon runs as a user systemd service. USB access is granted via udev rules (no root required).
@@ -63,26 +63,23 @@ git clone --recurse-submodules https://github.com/sgtaziz/lian-li-linux.git && c
 
 2) install dependencies
 - **Rust** (stable, 1.75+)
-- **Bun** (for the GUI frontend)
 - **ffmpeg** and **ffprobe** in `PATH` (for video/GIF decoding)
 - **System libraries:**
 
 ```bash
 # Arch
-sudo pacman -S hidapi libusb webkit2gtk gtk3 librsvg ffmpeg
+sudo pacman -S hidapi libusb ffmpeg
 
 # Ubuntu / Debian
-sudo apt install libhidapi-dev libusb-1.0-0-dev libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev ffmpeg
+sudo apt install libhidapi-dev libusb-1.0-0-dev libudev-dev ffmpeg
 
 # Fedora
-sudo dnf install hidapi-devel libusb1-devel webkit2gtk4.1-devel gtk3-devel librsvg2-devel ffmpeg
+sudo dnf install hidapi-devel libusb1-devel ffmpeg
 ```
 
 3) build the project
 ```bash
-# Install GUI frontend dependencies and build everything
-cd crates/lianli-gui && bun install \
-&& cd ../.. cargo build --release
+cargo build --release
 ```
 
 ### With Docker
@@ -93,16 +90,15 @@ docker build -f docker/build.Dockerfile -t lianli-linux-builder \
   --build-arg USER_ID="$(id -u)" \
   --build-arg GROUP_ID="$(id -g)" \
   .
-```  
+```
 2) build the project
 ```bash
-docker run --rm -it \                                            
-  -v "$PWD:/work" \               
-  -v "$PWD/target:/work/target" \  
+docker run --rm -it \
+  -v "$PWD:/work" \
+  -v "$PWD/target:/work/target" \
   -v "$PWD/.cache/cargo-registry:/home/builder/.cargo/registry" \
   -v "$PWD/.cache/cargo-git:/home/builder/.cargo/git" \
   lianli-linux-builder
-
 ```
 
 ### Binaries: `target/release/lianli-daemon` and `target/release/lianli-gui`
@@ -141,9 +137,9 @@ cp target/release/lianli-gui ~/.local/bin/
 
 # Install icons
 for size in 32x32 128x128 256x256; do mkdir -p ~/.local/share/icons/hicolor/$size/apps; done
-cp crates/lianli-gui/src-tauri/icons/32x32.png ~/.local/share/icons/hicolor/32x32/apps/lianli-gui.png
-cp crates/lianli-gui/src-tauri/icons/128x128.png ~/.local/share/icons/hicolor/128x128/apps/lianli-gui.png
-cp crates/lianli-gui/src-tauri/icons/128x128@2x.png ~/.local/share/icons/hicolor/256x256/apps/lianli-gui.png
+cp assets/icons/32x32.png ~/.local/share/icons/hicolor/32x32/apps/lianli-gui.png
+cp assets/icons/128x128.png ~/.local/share/icons/hicolor/128x128/apps/lianli-gui.png
+cp assets/icons/128x128@2x.png ~/.local/share/icons/hicolor/256x256/apps/lianli-gui.png
 
 # Install desktop entry
 cp lianli-gui.desktop ~/.local/share/applications/

@@ -6,8 +6,7 @@ members = [
     "crates/lianli-devices",
     "crates/lianli-media",
     "crates/lianli-daemon",
-    "crates/lianli-gui/src-tauri",
-    "crates/lianli-gui2",
+    "crates/lianli-gui",
 ]
 
 [workspace.dependencies]

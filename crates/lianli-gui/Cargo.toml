@@ -1,5 +1,5 @@
 [package]
-name = "lianli-gui2"
+name = "lianli-gui"
 version = "0.1.0"
 edition = "2021"
 
