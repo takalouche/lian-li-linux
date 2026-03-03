@@ -2,12 +2,12 @@ import { Theme } from "theme.slint";
 import { Sidebar } from "sidebar.slint";
 import { DevicesPage, DeviceData } from "pages/devices.slint";
 import { FansPage, FanCurveData, FanGroupData, FanSpeedSlot, CurvePoint, CurveSegment } from "pages/fans.slint";
-import { LcdPage, LcdEntryData, LcdDeviceOption } from "pages/lcd.slint";
+import { LcdPage, LcdEntryData, LcdDeviceOption, GaugeRangeData } from "pages/lcd.slint";
 import { RgbPage, RgbDeviceData, RgbZoneData, RgbColorData } from "pages/rgb.slint";
 import { SettingsPage } from "pages/settings.slint";
 
 export { DeviceData, FanCurveData, FanGroupData, FanSpeedSlot, CurvePoint, CurveSegment }
-export { LcdEntryData, LcdDeviceOption }
+export { LcdEntryData, LcdDeviceOption, GaugeRangeData }
 export { RgbDeviceData, RgbZoneData, RgbColorData }
 
 export component MainWindow inherits Window {
@@ -54,6 +54,8 @@ export component MainWindow inherits Window {
     callback refresh-devices();
     callback save-config();
     callback toggle-openrgb(bool);
+    callback set-default-fps(int);
+    callback set-openrgb-port(int);
 
     // LCD callbacks
     callback add-lcd();
@@ -72,6 +74,8 @@ export component MainWindow inherits Window {
     callback rgb-apply-to-all(string);
     callback rgb-toggle-swap-lr(string, int);
     callback rgb-toggle-swap-tb(string, int);
+    callback rgb-add-color(string, int);
+    callback rgb-remove-color(string, int, int);
 
     // Fan callbacks
     callback fan-add-curve();
@@ -83,6 +87,7 @@ export component MainWindow inherits Window {
     callback fan-point-removed(int, int);
     callback fan-set-slot-speed(string, int, string);
     callback fan-set-slot-pwm(string, int, int);
+    callback fan-set-update-interval(int);
 
     HorizontalLayout {
         Sidebar {
@@ -134,6 +139,7 @@ export component MainWindow inherits Window {
                 point-removed(cidx, pidx) => { root.fan-point-removed(cidx, pidx); }
                 set-slot-speed(dev-id, slot, val) => { root.fan-set-slot-speed(dev-id, slot, val); }
                 set-slot-pwm(dev-id, slot, pct) => { root.fan-set-slot-pwm(dev-id, slot, pct); }
+                set-update-interval(ms) => { root.fan-set-update-interval(ms); }
                 save-config => { root.save-config(); }
             }
 
@@ -153,6 +159,9 @@ export component MainWindow inherits Window {
                 apply-to-all(dev-id) => { root.rgb-apply-to-all(dev-id); }
                 toggle-swap-lr(dev-id, zone) => { root.rgb-toggle-swap-lr(dev-id, zone); }
                 toggle-swap-tb(dev-id, zone) => { root.rgb-toggle-swap-tb(dev-id, zone); }
+                add-color(dev-id, zone) => { root.rgb-add-color(dev-id, zone); }
+                remove-color(dev-id, zone, cidx) => { root.rgb-remove-color(dev-id, zone, cidx); }
+                toggle-openrgb(enabled) => { root.toggle-openrgb(enabled); }
                 save-config => { root.save-config(); }
             }
 
@@ -168,6 +177,8 @@ export component MainWindow inherits Window {
                 openrgb-port: root.openrgb-port;
                 openrgb-error: root.openrgb-error;
                 toggle-openrgb(enabled) => { root.toggle-openrgb(enabled); }
+                set-default-fps(fps) => { root.set-default-fps(fps); }
+                set-openrgb-port(port) => { root.set-openrgb-port(port); }
                 save-config => { root.save-config(); }
             }
         }

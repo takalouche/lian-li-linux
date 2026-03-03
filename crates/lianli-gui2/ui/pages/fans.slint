@@ -122,7 +122,7 @@ component FanGroupCard inherits Card {
         for slot[sidx] in root.group.slots: VerticalLayout {
             spacing: 4px;
 
-            if root.group.per-fan-control: Text {
+            if root.group.per-fan-control && sidx < root.group.fan-count: Text {
                 text: "Fan \{sidx + 1}";
                 font-size: 11px;
                 color: Theme.text-secondary;
@@ -134,8 +134,8 @@ component FanGroupCard inherits Card {
                 color: Theme.text-secondary;
             }
 
-            // Only show controls for fan 0 if not per-fan, or all fans if per-fan
-            if root.group.per-fan-control || sidx == 0: VerticalLayout {
+            // Only show controls for fan 0 if not per-fan, or up to fan-count if per-fan
+            if (root.group.per-fan-control && sidx < root.group.fan-count) || (!root.group.per-fan-control && sidx == 0): VerticalLayout {
                 spacing: 4px;
 
                 ComboBox {
@@ -183,6 +183,7 @@ export component FansPage inherits VerticalLayout {
     callback point-removed(int, int);
     callback set-slot-speed(string, int, string);
     callback set-slot-pwm(string, int, int);
+    callback set-update-interval(int);
     callback save-config();
 
     PageHeader {
@@ -278,6 +279,7 @@ export component FansPage inherits VerticalLayout {
                         value: root.update-interval;
                         minimum: 100;
                         maximum: 10000;
+                        edited(val) => { root.set-update-interval(val); }
                     }
                     Text {
                         text: "ms";

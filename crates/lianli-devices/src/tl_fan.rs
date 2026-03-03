@@ -663,7 +663,7 @@ impl RgbDevice for TlFanPortDevice {
     }
 
     fn set_mb_rgb_sync(&self, enabled: bool) -> Result<()> {
-        // MB sync is controller-wide — apply to ALL ports, not just this one.
+        // MB sync is controller-wide — firmware applies it globally regardless of port.
         let port_fan_counts = self
             .controller
             .last_handshake

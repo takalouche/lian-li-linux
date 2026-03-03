@@ -8,8 +8,16 @@ export struct LcdDeviceOption {
     serial: string,
 }
 
+export struct GaugeRangeData {
+    max-value: int,
+    r: int,
+    g: int,
+    b: int,
+}
+
 export struct LcdEntryData {
     serial: string,
+    device-label: string,
     media-type: string,
     path: string,
     fps: int,
@@ -35,6 +43,18 @@ export struct LcdEntryData {
     sensor-value-offset: int,
     sensor-unit-offset: int,
     sensor-label-offset: int,
+    // Sensor colors
+    sensor-text-color-r: int,
+    sensor-text-color-g: int,
+    sensor-text-color-b: int,
+    sensor-bg-color-r: int,
+    sensor-bg-color-g: int,
+    sensor-bg-color-b: int,
+    sensor-gauge-bg-r: int,
+    sensor-gauge-bg-g: int,
+    sensor-gauge-bg-b: int,
+    // Gauge ranges
+    sensor-gauge-ranges: [GaugeRangeData],
 }
 
 component OrientationButton inherits Rectangle {
@@ -95,8 +115,8 @@ component LcdConfigCard inherits Card {
             Text { text: "Device"; font-size: 12px; color: Theme.text-secondary; }
             ComboBox {
                 model: root.device-options;
-                current-value: root.lcd.serial;
-                selected(val) => { root.update-field(root.index, "serial", val); }
+                current-value: root.lcd.device-label;
+                selected(val) => { root.update-field(root.index, "device", val); }
             }
         }
 
@@ -136,17 +156,17 @@ component LcdConfigCard inherits Card {
             VerticalLayout {
                 spacing: 4px;
                 Text { text: "R"; font-size: 12px; color: Theme.text-secondary; }
-                SpinBox { value: root.lcd.rgb-r; minimum: 0; maximum: 255; }
+                SpinBox { value: root.lcd.rgb-r; minimum: 0; maximum: 255; edited(val) => { root.update-field(root.index, "rgb_r", "\{val}"); } }
             }
             VerticalLayout {
                 spacing: 4px;
                 Text { text: "G"; font-size: 12px; color: Theme.text-secondary; }
-                SpinBox { value: root.lcd.rgb-g; minimum: 0; maximum: 255; }
+                SpinBox { value: root.lcd.rgb-g; minimum: 0; maximum: 255; edited(val) => { root.update-field(root.index, "rgb_g", "\{val}"); } }
             }
             VerticalLayout {
                 spacing: 4px;
                 Text { text: "B"; font-size: 12px; color: Theme.text-secondary; }
-                SpinBox { value: root.lcd.rgb-b; minimum: 0; maximum: 255; }
+                SpinBox { value: root.lcd.rgb-b; minimum: 0; maximum: 255; edited(val) => { root.update-field(root.index, "rgb_b", "\{val}"); } }
             }
             Rectangle {
                 width: 32px;
@@ -198,6 +218,7 @@ component LcdConfigCard inherits Card {
                         value: root.lcd.sensor-decimal-places;
                         minimum: 0;
                         maximum: 3;
+                        edited(val) => { root.update-field(root.index, "sensor_decimal_places", "\{val}"); }
                     }
                 }
             }
@@ -230,17 +251,17 @@ component LcdConfigCard inherits Card {
                 VerticalLayout {
                     spacing: 4px;
                     Text { text: "Value Size"; font-size: 11px; color: Theme.text-secondary; }
-                    SpinBox { value: root.lcd.sensor-value-font-size; minimum: 1; maximum: 999; }
+                    SpinBox { value: root.lcd.sensor-value-font-size; minimum: 1; maximum: 999; edited(val) => { root.update-field(root.index, "sensor_value_font_size", "\{val}"); } }
                 }
                 VerticalLayout {
                     spacing: 4px;
                     Text { text: "Unit Size"; font-size: 11px; color: Theme.text-secondary; }
-                    SpinBox { value: root.lcd.sensor-unit-font-size; minimum: 1; maximum: 999; }
+                    SpinBox { value: root.lcd.sensor-unit-font-size; minimum: 1; maximum: 999; edited(val) => { root.update-field(root.index, "sensor_unit_font_size", "\{val}"); } }
                 }
                 VerticalLayout {
                     spacing: 4px;
                     Text { text: "Label Size"; font-size: 11px; color: Theme.text-secondary; }
-                    SpinBox { value: root.lcd.sensor-label-font-size; minimum: 1; maximum: 999; }
+                    SpinBox { value: root.lcd.sensor-label-font-size; minimum: 1; maximum: 999; edited(val) => { root.update-field(root.index, "sensor_label_font_size", "\{val}"); } }
                 }
             }
 
@@ -257,17 +278,17 @@ component LcdConfigCard inherits Card {
                 VerticalLayout {
                     spacing: 4px;
                     Text { text: "Start Angle"; font-size: 11px; color: Theme.text-secondary; }
-                    SpinBox { value: root.lcd.sensor-start-angle; minimum: 0; maximum: 360; }
+                    SpinBox { value: root.lcd.sensor-start-angle; minimum: 0; maximum: 360; edited(val) => { root.update-field(root.index, "sensor_start_angle", "\{val}"); } }
                 }
                 VerticalLayout {
                     spacing: 4px;
                     Text { text: "Sweep Angle"; font-size: 11px; color: Theme.text-secondary; }
-                    SpinBox { value: root.lcd.sensor-sweep-angle; minimum: 1; maximum: 360; }
+                    SpinBox { value: root.lcd.sensor-sweep-angle; minimum: 1; maximum: 360; edited(val) => { root.update-field(root.index, "sensor_sweep_angle", "\{val}"); } }
                 }
                 VerticalLayout {
                     spacing: 4px;
                     Text { text: "Radius"; font-size: 11px; color: Theme.text-secondary; }
-                    SpinBox { value: root.lcd.sensor-outer-radius; minimum: 10; maximum: 500; }
+                    SpinBox { value: root.lcd.sensor-outer-radius; minimum: 10; maximum: 500; edited(val) => { root.update-field(root.index, "sensor_outer_radius", "\{val}"); } }
                 }
             }
 
@@ -276,17 +297,147 @@ component LcdConfigCard inherits Card {
                 VerticalLayout {
                     spacing: 4px;
                     Text { text: "Thickness"; font-size: 11px; color: Theme.text-secondary; }
-                    SpinBox { value: root.lcd.sensor-thickness; minimum: 1; maximum: 200; }
+                    SpinBox { value: root.lcd.sensor-thickness; minimum: 1; maximum: 200; edited(val) => { root.update-field(root.index, "sensor_thickness", "\{val}"); } }
                 }
                 VerticalLayout {
                     spacing: 4px;
                     Text { text: "Corner R"; font-size: 11px; color: Theme.text-secondary; }
-                    SpinBox { value: root.lcd.sensor-corner-radius; minimum: 0; maximum: 100; }
+                    SpinBox { value: root.lcd.sensor-corner-radius; minimum: 0; maximum: 100; edited(val) => { root.update-field(root.index, "sensor_corner_radius", "\{val}"); } }
                 }
                 VerticalLayout {
                     spacing: 4px;
                     Text { text: "Update (ms)"; font-size: 11px; color: Theme.text-secondary; }
-                    SpinBox { value: root.lcd.sensor-update-interval; minimum: 100; maximum: 10000; }
+                    SpinBox { value: root.lcd.sensor-update-interval; minimum: 100; maximum: 10000; edited(val) => { root.update-field(root.index, "sensor_update_interval", "\{val}"); } }
+                }
+            }
+
+            // Text offsets
+            Text {
+                text: "Text Offsets";
+                font-size: 11px;
+                font-weight: 600;
+                color: Theme.text-secondary;
+            }
+
+            HorizontalLayout {
+                spacing: 8px;
+                VerticalLayout {
+                    spacing: 4px;
+                    Text { text: "Value Offset"; font-size: 11px; color: Theme.text-secondary; }
+                    SpinBox { value: root.lcd.sensor-value-offset; minimum: -500; maximum: 500; edited(val) => { root.update-field(root.index, "sensor_value_offset", "\{val}"); } }
+                }
+                VerticalLayout {
+                    spacing: 4px;
+                    Text { text: "Unit Offset"; font-size: 11px; color: Theme.text-secondary; }
+                    SpinBox { value: root.lcd.sensor-unit-offset; minimum: -500; maximum: 500; edited(val) => { root.update-field(root.index, "sensor_unit_offset", "\{val}"); } }
+                }
+                VerticalLayout {
+                    spacing: 4px;
+                    Text { text: "Label Offset"; font-size: 11px; color: Theme.text-secondary; }
+                    SpinBox { value: root.lcd.sensor-label-offset; minimum: -500; maximum: 500; edited(val) => { root.update-field(root.index, "sensor_label_offset", "\{val}"); } }
+                }
+            }
+
+            // Sensor colors
+            Text {
+                text: "Colors";
+                font-size: 11px;
+                font-weight: 600;
+                color: Theme.text-secondary;
+            }
+
+            HorizontalLayout {
+                spacing: 16px;
+                VerticalLayout {
+                    spacing: 4px;
+                    Text { text: "Text Color"; font-size: 11px; color: Theme.text-secondary; }
+                    HorizontalLayout {
+                        spacing: 4px;
+                        SpinBox { value: root.lcd.sensor-text-color-r; minimum: 0; maximum: 255; edited(val) => { root.update-field(root.index, "sensor_text_color_r", "\{val}"); } }
+                        SpinBox { value: root.lcd.sensor-text-color-g; minimum: 0; maximum: 255; edited(val) => { root.update-field(root.index, "sensor_text_color_g", "\{val}"); } }
+                        SpinBox { value: root.lcd.sensor-text-color-b; minimum: 0; maximum: 255; edited(val) => { root.update-field(root.index, "sensor_text_color_b", "\{val}"); } }
+                        Rectangle {
+                            width: 24px; height: 24px; border-radius: 4px;
+                            background: Colors.rgb(root.lcd.sensor-text-color-r, root.lcd.sensor-text-color-g, root.lcd.sensor-text-color-b);
+                            border-width: 1px; border-color: Theme.border;
+                        }
+                    }
+                }
+            }
+
+            HorizontalLayout {
+                spacing: 16px;
+                VerticalLayout {
+                    spacing: 4px;
+                    Text { text: "Background"; font-size: 11px; color: Theme.text-secondary; }
+                    HorizontalLayout {
+                        spacing: 4px;
+                        SpinBox { value: root.lcd.sensor-bg-color-r; minimum: 0; maximum: 255; edited(val) => { root.update-field(root.index, "sensor_bg_color_r", "\{val}"); } }
+                        SpinBox { value: root.lcd.sensor-bg-color-g; minimum: 0; maximum: 255; edited(val) => { root.update-field(root.index, "sensor_bg_color_g", "\{val}"); } }
+                        SpinBox { value: root.lcd.sensor-bg-color-b; minimum: 0; maximum: 255; edited(val) => { root.update-field(root.index, "sensor_bg_color_b", "\{val}"); } }
+                        Rectangle {
+                            width: 24px; height: 24px; border-radius: 4px;
+                            background: Colors.rgb(root.lcd.sensor-bg-color-r, root.lcd.sensor-bg-color-g, root.lcd.sensor-bg-color-b);
+                            border-width: 1px; border-color: Theme.border;
+                        }
+                    }
+                }
+            }
+
+            HorizontalLayout {
+                spacing: 16px;
+                VerticalLayout {
+                    spacing: 4px;
+                    Text { text: "Gauge Background"; font-size: 11px; color: Theme.text-secondary; }
+                    HorizontalLayout {
+                        spacing: 4px;
+                        SpinBox { value: root.lcd.sensor-gauge-bg-r; minimum: 0; maximum: 255; edited(val) => { root.update-field(root.index, "sensor_gauge_bg_r", "\{val}"); } }
+                        SpinBox { value: root.lcd.sensor-gauge-bg-g; minimum: 0; maximum: 255; edited(val) => { root.update-field(root.index, "sensor_gauge_bg_g", "\{val}"); } }
+                        SpinBox { value: root.lcd.sensor-gauge-bg-b; minimum: 0; maximum: 255; edited(val) => { root.update-field(root.index, "sensor_gauge_bg_b", "\{val}"); } }
+                        Rectangle {
+                            width: 24px; height: 24px; border-radius: 4px;
+                            background: Colors.rgb(root.lcd.sensor-gauge-bg-r, root.lcd.sensor-gauge-bg-g, root.lcd.sensor-gauge-bg-b);
+                            border-width: 1px; border-color: Theme.border;
+                        }
+                    }
+                }
+            }
+
+            // Gauge ranges
+            Text {
+                text: "Gauge Ranges";
+                font-size: 11px;
+                font-weight: 600;
+                color: Theme.text-secondary;
+            }
+
+            for range-data[ridx] in root.lcd.sensor-gauge-ranges: HorizontalLayout {
+                spacing: 4px;
+                Text { text: "Max %:"; font-size: 11px; color: Theme.text-secondary; vertical-alignment: center; }
+                SpinBox {
+                    value: range-data.max-value;
+                    minimum: 0; maximum: 100;
+                    edited(val) => { root.update-field(root.index, "gauge_range_max_\{ridx}", "\{val}"); }
+                }
+                SpinBox { value: range-data.r; minimum: 0; maximum: 255; edited(val) => { root.update-field(root.index, "gauge_range_r_\{ridx}", "\{val}"); } }
+                SpinBox { value: range-data.g; minimum: 0; maximum: 255; edited(val) => { root.update-field(root.index, "gauge_range_g_\{ridx}", "\{val}"); } }
+                SpinBox { value: range-data.b; minimum: 0; maximum: 255; edited(val) => { root.update-field(root.index, "gauge_range_b_\{ridx}", "\{val}"); } }
+                Rectangle {
+                    width: 24px; height: 24px; border-radius: 4px;
+                    background: Colors.rgb(range-data.r, range-data.g, range-data.b);
+                    border-width: 1px; border-color: Theme.border;
+                }
+                Button {
+                    text: "X";
+                    clicked => { root.update-field(root.index, "gauge_range_remove", "\{ridx}"); }
+                }
+            }
+
+            HorizontalLayout {
+                alignment: start;
+                Button {
+                    text: "+ Add Range";
+                    clicked => { root.update-field(root.index, "gauge_range_add", ""); }
                 }
             }
         }
@@ -302,6 +453,7 @@ component LcdConfigCard inherits Card {
                     value: root.lcd.fps;
                     minimum: 1;
                     maximum: 60;
+                    edited(val) => { root.update-field(root.index, "fps", "\{val}"); }
                 }
             }
 

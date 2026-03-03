@@ -22,6 +22,7 @@ export struct RgbZoneData {
     scope: string,
     swap-lr: bool,
     swap-tb: bool,
+    is-synced-zone: bool,
 }
 
 export struct RgbDeviceData {
@@ -77,6 +78,8 @@ component RgbZoneEditor inherits VerticalLayout {
     callback set-direction(string);
     callback set-scope(string);
     callback set-color(int, int, int, int);
+    callback add-color();
+    callback remove-color(int);
     callback toggle-swap-lr();
     callback toggle-swap-tb();
 
@@ -97,17 +100,36 @@ component RgbZoneEditor inherits VerticalLayout {
     // Colors (up to 4)
     if root.zone.mode != "Off" && root.zone.mode != "Rainbow": VerticalLayout {
         spacing: 4px;
-        Text { text: "Colors"; font-size: 12px; color: Theme.text-secondary; }
+
+        HorizontalLayout {
+            spacing: 8px;
+            Text { text: "Colors"; font-size: 12px; color: Theme.text-secondary; vertical-alignment: center; }
+            Rectangle { horizontal-stretch: 1; }
+            if root.zone.colors.length < 4: Button {
+                text: "+";
+                clicked => { root.add-color(); }
+            }
+        }
 
         HorizontalLayout {
             spacing: 8px;
 
-            for color-data[cidx] in root.zone.colors: ColorPicker {
+            for color-data[cidx] in root.zone.colors: VerticalLayout {
                 max-width: 180px;
-                red: color-data.r;
-                green: color-data.g;
-                blue: color-data.b;
-                changed(r, g, b) => { root.set-color(cidx, r, g, b); }
+                spacing: 2px;
+                ColorPicker {
+                    red: color-data.r;
+                    green: color-data.g;
+                    blue: color-data.b;
+                    changed(r, g, b) => { root.set-color(cidx, r, g, b); }
+                }
+                if root.zone.colors.length > 1: HorizontalLayout {
+                    alignment: center;
+                    Button {
+                        text: "Remove";
+                        clicked => { root.remove-color(cidx); }
+                    }
+                }
             }
         }
     }
@@ -194,6 +216,8 @@ component RgbDeviceCard inherits Card {
     callback apply-to-all(string);
     callback toggle-swap-lr(string, int);
     callback toggle-swap-tb(string, int);
+    callback add-color(string, int);
+    callback remove-color(string, int, int);
 
     VerticalLayout {
         spacing: 8px;
@@ -229,19 +253,19 @@ component RgbDeviceCard inherits Card {
 
             for zone-data[zidx] in root.device.zones: VerticalLayout {
                 spacing: 0px;
-                // When synced and not zone 0, reduce opacity
-                opacity: root.device.synced && zidx != 0 ? 0.5 : 1.0;
+                // Synced secondary zones are dimmed
+                opacity: zone-data.is-synced-zone ? 0.5 : 1.0;
 
                 // Zone header (click to expand)
                 Rectangle {
                     height: 32px;
                     border-radius: 4px;
-                    background: root.expanded-zone == zidx ? Theme.accent.transparentize(0.9) : transparent;
+                    background: root.expanded-zone == zidx && !zone-data.is-synced-zone ? Theme.accent.transparentize(0.9) : transparent;
 
                     TouchArea {
                         clicked => {
-                            // When synced, only zone 0 is expandable
-                            if root.device.synced && zidx != 0 { return; }
+                            // Synced secondary zones are not expandable
+                            if zone-data.is-synced-zone { return; }
                             root.expanded-zone = root.expanded-zone == zidx ? -1 : zidx;
                         }
                     }
@@ -251,7 +275,7 @@ component RgbDeviceCard inherits Card {
                         padding-right: 8px;
                         spacing: 8px;
 
-                        Text {
+                        if !zone-data.is-synced-zone: Text {
                             text: root.expanded-zone == zidx ? "\u{25BC}" : "\u{25B6}";
                             font-size: 10px;
                             color: Theme.text-secondary;
@@ -259,8 +283,7 @@ component RgbDeviceCard inherits Card {
                             width: 14px;
                         }
                         Text {
-                            // When synced, zone 0 shows "All Fans"
-                            text: root.device.synced && zidx == 0 ? "All Fans" : zone-data.zone-name;
+                            text: zone-data.zone-name;
                             font-size: 13px;
                             color: Theme.text-primary;
                             vertical-alignment: center;
@@ -272,24 +295,17 @@ component RgbDeviceCard inherits Card {
                             vertical-alignment: center;
                         }
                         Text {
-                            text: zone-data.mode;
+                            text: zone-data.is-synced-zone ? "SYNCED" : zone-data.mode;
                             font-size: 11px;
-                            color: Theme.accent;
-                            vertical-alignment: center;
-                        }
-                        // Synced label for non-zone-0
-                        if root.device.synced && zidx != 0: Text {
-                            text: "SYNCED";
-                            font-size: 10px;
-                            font-weight: 600;
-                            color: #f59e0b;
+                            font-weight: zone-data.is-synced-zone ? 600 : 400;
+                            color: zone-data.is-synced-zone ? #f59e0b : Theme.accent;
                             vertical-alignment: center;
                         }
                     }
                 }
 
-                // Zone editor (expanded) — only when not synced for non-zone-0
-                if root.expanded-zone == zidx && (!root.device.synced || zidx == 0): Rectangle {
+                // Zone editor (expanded) — synced zones can't expand
+                if root.expanded-zone == zidx && !zone-data.is-synced-zone: Rectangle {
                     border-radius: 4px;
                     background: Theme.card-background;
 
@@ -306,6 +322,8 @@ component RgbDeviceCard inherits Card {
                             set-direction(dir) => { root.set-direction(root.device.device-id, zidx, dir); }
                             set-scope(scope) => { root.set-scope(root.device.device-id, zidx, scope); }
                             set-color(cidx, r, g, b) => { root.set-color(root.device.device-id, zidx, cidx, r, g, b); }
+                            add-color => { root.add-color(root.device.device-id, zidx); }
+                            remove-color(cidx) => { root.remove-color(root.device.device-id, zidx, cidx); }
                             toggle-swap-lr => { root.toggle-swap-lr(root.device.device-id, zidx); }
                             toggle-swap-tb => { root.toggle-swap-tb(root.device.device-id, zidx); }
                         }
@@ -314,7 +332,7 @@ component RgbDeviceCard inherits Card {
             }
 
             // Apply to all button — hidden when synced (zone 0 already controls all)
-            if root.device.zones.length > 1 && !root.device.synced: HorizontalLayout {
+            if root.device.zones.length > 1 && root.device.has-group-zones && !root.device.synced: HorizontalLayout {
                 alignment: end;
                 padding-top: 4px;
                 Button {
@@ -343,6 +361,9 @@ export component RgbPage inherits VerticalLayout {
     callback apply-to-all(string);
     callback toggle-swap-lr(string, int);
     callback toggle-swap-tb(string, int);
+    callback add-color(string, int);
+    callback remove-color(string, int, int);
+    callback toggle-openrgb(bool);
     callback save-config();
 
     PageHeader {
@@ -376,6 +397,11 @@ export component RgbPage inherits VerticalLayout {
                         vertical-alignment: center;
                     }
                     Rectangle { horizontal-stretch: 1; }
+                    CheckBox {
+                        text: "Enable";
+                        checked: root.openrgb-enabled;
+                        toggled => { root.toggle-openrgb(self.checked); }
+                    }
                     VerticalLayout {
                         alignment: center;
                         StatusDot { active: root.openrgb-running; }
@@ -403,6 +429,8 @@ export component RgbPage inherits VerticalLayout {
                 apply-to-all(dev-id) => { root.apply-to-all(dev-id); }
                 toggle-swap-lr(dev-id, zone) => { root.toggle-swap-lr(dev-id, zone); }
                 toggle-swap-tb(dev-id, zone) => { root.toggle-swap-tb(dev-id, zone); }
+                add-color(dev-id, zone) => { root.add-color(dev-id, zone); }
+                remove-color(dev-id, zone, cidx) => { root.remove-color(dev-id, zone, cidx); }
             }
 
             if root.rgb-devices.length == 0: Text {

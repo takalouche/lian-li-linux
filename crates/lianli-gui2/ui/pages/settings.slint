@@ -16,6 +16,8 @@ export component SettingsPage inherits VerticalLayout {
     in property <string> openrgb-error: "";
 
     callback toggle-openrgb(bool);
+    callback set-default-fps(int);
+    callback set-openrgb-port(int);
     callback save-config();
 
     PageHeader {
@@ -108,6 +110,7 @@ export component SettingsPage inherits VerticalLayout {
                             value: root.default-fps;
                             minimum: 1;
                             maximum: 60;
+                            edited(val) => { root.set-default-fps(val); }
                         }
                     }
 
@@ -149,6 +152,7 @@ export component SettingsPage inherits VerticalLayout {
                             value: root.openrgb-port;
                             minimum: 1024;
                             maximum: 65535;
+                            edited(val) => { root.set-openrgb-port(val); }
                         }
                     }
 

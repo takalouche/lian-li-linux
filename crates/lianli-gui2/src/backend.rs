@@ -5,8 +5,9 @@ use crate::conversions;
 use lianli_shared::config::AppConfig;
 use lianli_shared::ipc::{DeviceInfo, IpcRequest, TelemetrySnapshot};
 use lianli_shared::rgb::RgbDeviceCapabilities;
+use std::collections::HashMap;
 use std::sync::mpsc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// Commands sent from the UI thread to the backend.
 #[derive(Debug)]
@@ -43,43 +44,109 @@ pub fn start(
     BackendHandle { tx }
 }
 
+/// Debounce window for rapid IPC requests (e.g. slider drags).
+const DEBOUNCE_MS: u64 = 50;
+
+/// Return a coalescing key for requests that should be debounced.
+/// Requests with the same key replace each other — only the latest is sent.
+fn debounce_key(req: &IpcRequest) -> Option<String> {
+    match req {
+        IpcRequest::SetRgbEffect { device_id, zone, .. } => Some(format!("rgb:{device_id}:{zone}")),
+        IpcRequest::SetFanDirection { device_id, zone, .. } => {
+            Some(format!("dir:{device_id}:{zone}"))
+        }
+        _ => None,
+    }
+}
+
+fn send_ipc(req: &IpcRequest) {
+    tracing::debug!("Sending IPC: {req:?}");
+    match ipc_client::send_request(req) {
+        Ok(resp) => {
+            if let lianli_shared::ipc::IpcResponse::Error { ref message } = resp {
+                tracing::warn!("IPC returned error: {message}");
+            }
+        }
+        Err(e) => tracing::error!("IPC request failed: {e}"),
+    }
+}
+
+fn flush_pending(pending: &mut HashMap<String, IpcRequest>) {
+    for (_, req) in pending.drain() {
+        send_ipc(&req);
+    }
+}
+
 fn run_backend(
     window: slint::Weak<crate::MainWindow>,
     rx: mpsc::Receiver<BackendCommand>,
     shared: crate::Shared,
 ) {
     let poll_interval = Duration::from_secs(2);
+    let debounce_duration = Duration::from_millis(DEBOUNCE_MS);
+
+    // Debounce map: coalesces rapid requests of the same kind (e.g. slider drags)
+    let mut pending: HashMap<String, IpcRequest> = HashMap::new();
+    let mut last_queue_time: Option<Instant> = None;
+    let mut last_poll = Instant::now();
 
     // Initial load
     poll_daemon(&window, &shared);
     load_config(&window, &shared);
 
     loop {
-        // Check for commands (non-blocking with timeout = poll interval)
-        match rx.recv_timeout(poll_interval) {
+        let timeout = if pending.is_empty() {
+            // No pending debounced requests — wait for next command or poll
+            poll_interval.saturating_sub(last_poll.elapsed())
+        } else {
+            // Have pending requests — wait for debounce window to expire
+            let since_queue = last_queue_time.map(|t| t.elapsed()).unwrap_or_default();
+            debounce_duration.saturating_sub(since_queue)
+        };
+
+        match rx.recv_timeout(timeout) {
             Ok(BackendCommand::RefreshDevices) => {
                 poll_daemon(&window, &shared);
+                last_poll = Instant::now();
             }
             Ok(BackendCommand::SaveConfig(config)) => {
+                // Flush pending effects before saving config
+                flush_pending(&mut pending);
+                last_queue_time = None;
                 save_config(&window, config);
                 // Reload so UI reflects saved state
                 load_config(&window, &shared);
+                last_poll = Instant::now();
             }
             Ok(BackendCommand::IpcRequest(req)) => {
-                if let Err(e) = ipc_client::send_request(&req) {
-                    tracing::error!("IPC request failed: {e}");
+                if let Some(key) = debounce_key(&req) {
+                    pending.insert(key, req);
+                    last_queue_time = Some(Instant::now());
+                } else {
+                    // Non-debounced: send immediately
+                    send_ipc(&req);
                 }
             }
             Ok(BackendCommand::Shutdown) => {
                 tracing::info!("Backend thread shutting down");
+                flush_pending(&mut pending);
                 break;
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {
-                // Regular poll
-                poll_daemon(&window, &shared);
+                // Flush any debounced requests whose window has expired
+                if !pending.is_empty() {
+                    flush_pending(&mut pending);
+                    last_queue_time = None;
+                }
+                // Regular daemon poll
+                if last_poll.elapsed() >= poll_interval {
+                    poll_daemon(&window, &shared);
+                    last_poll = Instant::now();
+                }
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => {
                 tracing::info!("Backend channel disconnected, shutting down");
+                flush_pending(&mut pending);
                 break;
             }
         }
@@ -182,7 +249,7 @@ fn load_config(window: &slint::Weak<crate::MainWindow>, shared: &crate::Shared) 
                 w.set_openrgb_port(openrgb_port);
 
                 // LCD entries
-                let lcd_model = conversions::lcd_entries_to_model(&config.lcds);
+                let lcd_model = conversions::lcd_entries_to_model(&config.lcds, &devices);
                 w.set_lcd_entries(lcd_model);
                 let lcd_opts = conversions::lcd_device_options(&devices);
                 w.set_lcd_device_options(lcd_opts);

@@ -8,7 +8,7 @@ use lianli_shared::ipc::IpcRequest;
 use lianli_shared::rgb::{
     RgbAppConfig, RgbDeviceConfig, RgbDirection, RgbEffect, RgbMode, RgbScope, RgbZoneConfig,
 };
-use slint::Model;
+use slint::{Model, ModelRc, VecModel};
 use std::sync::{Arc, Mutex};
 
 slint::include_modules!();
@@ -67,6 +67,101 @@ fn main() {
         });
     }
 
+    // ── Set default FPS ──
+    {
+        let shared = shared.clone();
+        let weak = window.as_weak();
+        window.on_set_default_fps(move |fps| {
+            let mut state = shared.lock().unwrap();
+            if let Some(ref mut c) = state.config {
+                c.default_fps = fps as f32;
+            }
+            drop(state);
+            if let Some(w) = weak.upgrade() { w.set_config_dirty(true); }
+        });
+    }
+
+    // ── Set OpenRGB port ──
+    {
+        let shared = shared.clone();
+        let weak = window.as_weak();
+        window.on_set_openrgb_port(move |port| {
+            let mut state = shared.lock().unwrap();
+            if let Some(ref mut c) = state.config {
+                let rgb = c.rgb.get_or_insert_with(Default::default);
+                rgb.openrgb_port = port as u16;
+            }
+            drop(state);
+            if let Some(w) = weak.upgrade() { w.set_config_dirty(true); }
+        });
+    }
+
+    // ── Set fan update interval ──
+    {
+        let shared = shared.clone();
+        let weak = window.as_weak();
+        window.on_fan_set_update_interval(move |ms| {
+            let mut state = shared.lock().unwrap();
+            if let Some(ref mut c) = state.config {
+                let fc = c.fans.get_or_insert_with(|| FanConfig {
+                        speeds: vec![],
+                        update_interval_ms: 1000,
+                    });
+                fc.update_interval_ms = ms as u64;
+            }
+            drop(state);
+            if let Some(w) = weak.upgrade() { w.set_config_dirty(true); }
+        });
+    }
+
+    // ── RGB add/remove color ──
+    {
+        let tx = backend.tx.clone();
+        let shared = shared.clone();
+        let weak = window.as_weak();
+        window.on_rgb_add_color(move |dev_id, zone| {
+            let dev_id = dev_id.to_string();
+            let zone = zone as u8;
+            let effect = with_zone_effect(&shared, &dev_id, zone, |e| {
+                if e.colors.len() < 4 {
+                    e.colors.push([255, 255, 255]);
+                }
+            });
+            send_rgb_effect(&tx, &shared, &dev_id, zone, &effect);
+            if let Some(w) = weak.upgrade() {
+                update_rgb_zone_colors_in_place(&w, &dev_id, zone, |colors| {
+                    if colors.len() < 4 {
+                        colors.push(RgbColorData { r: 255, g: 255, b: 255 });
+                    }
+                });
+            }
+        });
+    }
+
+    {
+        let tx = backend.tx.clone();
+        let shared = shared.clone();
+        let weak = window.as_weak();
+        window.on_rgb_remove_color(move |dev_id, zone, cidx| {
+            let dev_id = dev_id.to_string();
+            let zone = zone as u8;
+            let cidx_usize = cidx as usize;
+            let effect = with_zone_effect(&shared, &dev_id, zone, |e| {
+                if e.colors.len() > 1 && cidx_usize < e.colors.len() {
+                    e.colors.remove(cidx_usize);
+                }
+            });
+            send_rgb_effect(&tx, &shared, &dev_id, zone, &effect);
+            if let Some(w) = weak.upgrade() {
+                update_rgb_zone_colors_in_place(&w, &dev_id, zone, |colors| {
+                    if colors.len() > 1 && cidx_usize < colors.len() {
+                        colors.remove(cidx_usize);
+                    }
+                });
+            }
+        });
+    }
+
     // ── RGB callbacks ──
     wire_rgb_callbacks(&window, &backend, &shared);
 
@@ -100,7 +195,12 @@ fn wire_rgb_callbacks(
             });
 
             send_rgb_effect(&tx, &shared, &dev_id, zone, &effect);
-            refresh_rgb_ui(&weak, &shared);
+            if let Some(w) = weak.upgrade() {
+                let mode = mode.clone();
+                update_rgb_zone_in_place(&w, &dev_id, zone, |z| {
+                    z.mode = mode.clone();
+                });
+            }
         });
     }
 
@@ -115,7 +215,10 @@ fn wire_rgb_callbacks(
                 e.speed = speed as u8;
             });
             send_rgb_effect(&tx, &shared, &dev_id, zone, &effect);
-            refresh_rgb_ui(&weak, &shared);
+            // In-place update to avoid destroying expanded-zone state
+            if let Some(w) = weak.upgrade() {
+                update_rgb_zone_in_place(&w, &dev_id, zone, |z| { z.speed = speed; });
+            }
         });
     }
 
@@ -130,7 +233,10 @@ fn wire_rgb_callbacks(
                 e.brightness = brightness as u8;
             });
             send_rgb_effect(&tx, &shared, &dev_id, zone, &effect);
-            refresh_rgb_ui(&weak, &shared);
+            // In-place update to avoid destroying expanded-zone state
+            if let Some(w) = weak.upgrade() {
+                update_rgb_zone_in_place(&w, &dev_id, zone, |z| { z.brightness = brightness; });
+            }
         });
     }
 
@@ -145,7 +251,12 @@ fn wire_rgb_callbacks(
                 e.direction = parse_rgb_direction(&dir);
             });
             send_rgb_effect(&tx, &shared, &dev_id, zone, &effect);
-            refresh_rgb_ui(&weak, &shared);
+            if let Some(w) = weak.upgrade() {
+                let dir = dir.clone();
+                update_rgb_zone_in_place(&w, &dev_id, zone, |z| {
+                    z.direction = dir.clone();
+                });
+            }
         });
     }
 
@@ -160,7 +271,12 @@ fn wire_rgb_callbacks(
                 e.scope = parse_rgb_scope(&scope);
             });
             send_rgb_effect(&tx, &shared, &dev_id, zone, &effect);
-            refresh_rgb_ui(&weak, &shared);
+            if let Some(w) = weak.upgrade() {
+                let scope = scope.clone();
+                update_rgb_zone_in_place(&w, &dev_id, zone, |z| {
+                    z.scope = scope.clone();
+                });
+            }
         });
     }
 
@@ -179,7 +295,32 @@ fn wire_rgb_callbacks(
                 e.colors[cidx] = [r as u8, g as u8, b as u8];
             });
             send_rgb_effect(&tx, &shared, &dev_id, zone, &effect);
-            refresh_rgb_ui(&weak, &shared);
+            // In-place color update to avoid destroying expanded-zone state
+            if let Some(w) = weak.upgrade() {
+                let devices = w.get_rgb_devices();
+                for di in 0..devices.row_count() {
+                    if let Some(dev_data) = devices.row_data(di) {
+                        if dev_data.device_id.as_str() == dev_id {
+                            // Update target zone
+                            if let Some(zone_data) = dev_data.zones.row_data(zone as usize) {
+                                zone_data.colors.set_row_data(cidx as usize, RgbColorData { r, g, b });
+                            }
+                            // Broadcast to other zones when synced
+                            if zone == 0 && dev_data.synced {
+                                for zi in 1..dev_data.zones.row_count() {
+                                    if let Some(zd) = dev_data.zones.row_data(zi) {
+                                        if (cidx as usize) < zd.colors.row_count() {
+                                            zd.colors.set_row_data(cidx as usize, RgbColorData { r, g, b });
+                                        }
+                                    }
+                                }
+                            }
+                            break;
+                        }
+                    }
+                }
+                w.set_config_dirty(true);
+            }
         });
     }
 
@@ -189,13 +330,14 @@ fn wire_rgb_callbacks(
         let weak = window.as_weak();
         window.on_rgb_toggle_mb_sync(move |dev_id, enabled| {
             let dev_id = dev_id.to_string();
+            let base_id = dev_id.split(":port").next().unwrap_or(&dev_id).to_string();
             {
                 let mut state = shared.lock().unwrap();
                 if let Some(ref mut c) = state.config {
                     let rgb = c.rgb.get_or_insert_with(Default::default);
-                    let base_id = dev_id.split(":port").next().unwrap_or(&dev_id);
+                    // MB sync is controller-wide — update all sibling ports
                     for dev_cfg in &mut rgb.devices {
-                        if dev_cfg.device_id.starts_with(base_id) {
+                        if dev_cfg.device_id.starts_with(&base_id) {
                             dev_cfg.mb_rgb_sync = enabled;
                         }
                     }
@@ -210,11 +352,23 @@ fn wire_rgb_callbacks(
             }
             let _ = tx.send(backend::BackendCommand::IpcRequest(
                 IpcRequest::SetMbRgbSync {
-                    device_id: dev_id,
+                    device_id: dev_id.clone(),
                     enabled,
                 },
             ));
-            refresh_rgb_ui(&weak, &shared);
+            // In-place update: reflect mb-rgb-sync on all sibling ports
+            if let Some(w) = weak.upgrade() {
+                let devices = w.get_rgb_devices();
+                for di in 0..devices.row_count() {
+                    if let Some(mut dev_data) = devices.row_data(di) {
+                        if dev_data.device_id.as_str().starts_with(&base_id) {
+                            dev_data.mb_rgb_sync = enabled;
+                            devices.set_row_data(di, dev_data);
+                        }
+                    }
+                }
+                w.set_config_dirty(true);
+            }
         });
     }
 
@@ -266,13 +420,17 @@ fn wire_rgb_callbacks(
             };
             let _ = tx.send(backend::BackendCommand::IpcRequest(
                 IpcRequest::SetFanDirection {
-                    device_id: dev_id,
+                    device_id: dev_id.clone(),
                     zone,
                     swap_lr,
                     swap_tb,
                 },
             ));
-            refresh_rgb_ui(&weak, &shared);
+            if let Some(w) = weak.upgrade() {
+                update_rgb_zone_in_place(&w, &dev_id, zone, |z| {
+                    z.swap_lr = swap_lr;
+                });
+            }
         });
     }
 
@@ -297,13 +455,17 @@ fn wire_rgb_callbacks(
             };
             let _ = tx.send(backend::BackendCommand::IpcRequest(
                 IpcRequest::SetFanDirection {
-                    device_id: dev_id,
+                    device_id: dev_id.clone(),
                     zone,
                     swap_lr,
                     swap_tb,
                 },
             ));
-            refresh_rgb_ui(&weak, &shared);
+            if let Some(w) = weak.upgrade() {
+                update_rgb_zone_in_place(&w, &dev_id, zone, |z| {
+                    z.swap_tb = swap_tb;
+                });
+            }
         });
     }
 }
@@ -600,15 +762,22 @@ fn wire_lcd_callbacks(
             let field_str = field.to_string();
             // Only rebuild UI for dropdown/button fields that affect layout.
             // Text fields update in-place in the LineEdit — rebuilding would steal focus.
-            let needs_refresh = matches!(field_str.as_str(), "serial" | "media_type" | "orientation");
+            let needs_refresh = matches!(field_str.as_str(), "device" | "media_type" | "orientation")
+                || field_str == "gauge_range_add"
+                || field_str == "gauge_range_remove";
             {
                 let mut state = shared.lock().unwrap();
+                let devices = state.devices.clone();
                 if let Some(ref mut c) = state.config {
                     let idx = idx as usize;
                     if let Some(lcd) = c.lcds.get_mut(idx) {
                         let val = val.to_string();
                         match field_str.as_str() {
-                            "serial" => lcd.serial = Some(val),
+                            "device" => {
+                                // Resolve label back to serial
+                                let serial = conversions::lcd_label_to_serial(&val, &devices);
+                                lcd.serial = Some(serial);
+                            }
                             "media_type" => {
                                 lcd.media_type = match val.as_str() {
                                     "Image" => lianli_shared::media::MediaType::Image,
@@ -634,6 +803,107 @@ fn wire_lcd_callbacks(
                             "sensor_font_path" => {
                                 lcd.sensor.get_or_insert_with(default_sensor).font_path =
                                     Some(std::path::PathBuf::from(val));
+                            }
+                            "fps" => lcd.fps = Some(val.parse::<f32>().unwrap_or(30.0)),
+                            "rgb_r" => lcd.rgb.get_or_insert([0, 0, 0])[0] = val.parse().unwrap_or(0),
+                            "rgb_g" => lcd.rgb.get_or_insert([0, 0, 0])[1] = val.parse().unwrap_or(0),
+                            "rgb_b" => lcd.rgb.get_or_insert([0, 0, 0])[2] = val.parse().unwrap_or(0),
+                            "sensor_decimal_places" => {
+                                lcd.sensor.get_or_insert_with(default_sensor).decimal_places = val.parse().unwrap_or(0);
+                            }
+                            "sensor_update_interval" => {
+                                lcd.sensor.get_or_insert_with(default_sensor).update_interval_ms = val.parse().unwrap_or(1000);
+                            }
+                            "sensor_value_font_size" => {
+                                lcd.sensor.get_or_insert_with(default_sensor).value_font_size = val.parse().unwrap_or(120.0);
+                            }
+                            "sensor_unit_font_size" => {
+                                lcd.sensor.get_or_insert_with(default_sensor).unit_font_size = val.parse().unwrap_or(40.0);
+                            }
+                            "sensor_label_font_size" => {
+                                lcd.sensor.get_or_insert_with(default_sensor).label_font_size = val.parse().unwrap_or(30.0);
+                            }
+                            "sensor_start_angle" => {
+                                lcd.sensor.get_or_insert_with(default_sensor).gauge_start_angle = val.parse().unwrap_or(135.0);
+                            }
+                            "sensor_sweep_angle" => {
+                                lcd.sensor.get_or_insert_with(default_sensor).gauge_sweep_angle = val.parse().unwrap_or(270.0);
+                            }
+                            "sensor_outer_radius" => {
+                                lcd.sensor.get_or_insert_with(default_sensor).gauge_outer_radius = val.parse().unwrap_or(200.0);
+                            }
+                            "sensor_thickness" => {
+                                lcd.sensor.get_or_insert_with(default_sensor).gauge_thickness = val.parse().unwrap_or(30.0);
+                            }
+                            "sensor_corner_radius" => {
+                                lcd.sensor.get_or_insert_with(default_sensor).bar_corner_radius = val.parse().unwrap_or(5.0);
+                            }
+                            "sensor_value_offset" => {
+                                lcd.sensor.get_or_insert_with(default_sensor).value_offset = val.parse().unwrap_or(0);
+                            }
+                            "sensor_unit_offset" => {
+                                lcd.sensor.get_or_insert_with(default_sensor).unit_offset = val.parse().unwrap_or(0);
+                            }
+                            "sensor_label_offset" => {
+                                lcd.sensor.get_or_insert_with(default_sensor).label_offset = val.parse().unwrap_or(0);
+                            }
+                            "sensor_text_color_r" => lcd.sensor.get_or_insert_with(default_sensor).text_color[0] = val.parse().unwrap_or(255),
+                            "sensor_text_color_g" => lcd.sensor.get_or_insert_with(default_sensor).text_color[1] = val.parse().unwrap_or(255),
+                            "sensor_text_color_b" => lcd.sensor.get_or_insert_with(default_sensor).text_color[2] = val.parse().unwrap_or(255),
+                            "sensor_bg_color_r" => lcd.sensor.get_or_insert_with(default_sensor).background_color[0] = val.parse().unwrap_or(0),
+                            "sensor_bg_color_g" => lcd.sensor.get_or_insert_with(default_sensor).background_color[1] = val.parse().unwrap_or(0),
+                            "sensor_bg_color_b" => lcd.sensor.get_or_insert_with(default_sensor).background_color[2] = val.parse().unwrap_or(0),
+                            "sensor_gauge_bg_r" => lcd.sensor.get_or_insert_with(default_sensor).gauge_background_color[0] = val.parse().unwrap_or(40),
+                            "sensor_gauge_bg_g" => lcd.sensor.get_or_insert_with(default_sensor).gauge_background_color[1] = val.parse().unwrap_or(40),
+                            "sensor_gauge_bg_b" => lcd.sensor.get_or_insert_with(default_sensor).gauge_background_color[2] = val.parse().unwrap_or(40),
+                            "gauge_range_add" => {
+                                let s = lcd.sensor.get_or_insert_with(default_sensor);
+                                s.gauge_ranges.push(lianli_shared::media::SensorRange {
+                                    max: Some(100.0),
+                                    color: [0, 200, 0],
+                                });
+                            }
+                            f if f.starts_with("gauge_range_remove") => {
+                                if let Ok(ridx) = val.parse::<usize>() {
+                                    let s = lcd.sensor.get_or_insert_with(default_sensor);
+                                    if ridx < s.gauge_ranges.len() {
+                                        s.gauge_ranges.remove(ridx);
+                                    }
+                                }
+                            }
+                            f if f.starts_with("gauge_range_max_") => {
+                                if let Some(ridx_str) = f.strip_prefix("gauge_range_max_") {
+                                    if let (Ok(ridx), Ok(v)) = (ridx_str.parse::<usize>(), val.parse::<f32>()) {
+                                        let s = lcd.sensor.get_or_insert_with(default_sensor);
+                                        if let Some(r) = s.gauge_ranges.get_mut(ridx) {
+                                            r.max = Some(v);
+                                        }
+                                    }
+                                }
+                            }
+                            f if f.starts_with("gauge_range_r_") => {
+                                if let Some(ridx_str) = f.strip_prefix("gauge_range_r_") {
+                                    if let (Ok(ridx), Ok(v)) = (ridx_str.parse::<usize>(), val.parse::<u8>()) {
+                                        let s = lcd.sensor.get_or_insert_with(default_sensor);
+                                        if let Some(r) = s.gauge_ranges.get_mut(ridx) { r.color[0] = v; }
+                                    }
+                                }
+                            }
+                            f if f.starts_with("gauge_range_g_") => {
+                                if let Some(ridx_str) = f.strip_prefix("gauge_range_g_") {
+                                    if let (Ok(ridx), Ok(v)) = (ridx_str.parse::<usize>(), val.parse::<u8>()) {
+                                        let s = lcd.sensor.get_or_insert_with(default_sensor);
+                                        if let Some(r) = s.gauge_ranges.get_mut(ridx) { r.color[1] = v; }
+                                    }
+                                }
+                            }
+                            f if f.starts_with("gauge_range_b_") => {
+                                if let Some(ridx_str) = f.strip_prefix("gauge_range_b_") {
+                                    if let (Ok(ridx), Ok(v)) = (ridx_str.parse::<usize>(), val.parse::<u8>()) {
+                                        let s = lcd.sensor.get_or_insert_with(default_sensor);
+                                        if let Some(r) = s.gauge_ranges.get_mut(ridx) { r.color[2] = v; }
+                                    }
+                                }
                             }
                             _ => {}
                         }
@@ -707,10 +977,10 @@ fn refresh_fan_ui(weak: &slint::Weak<MainWindow>, shared: &Shared) {
 }
 
 fn refresh_lcd_ui(weak: &slint::Weak<MainWindow>, shared: &Shared) {
-    let lcds = {
+    let (lcds, devices) = {
         let state = shared.lock().unwrap();
         match state.config.as_ref() {
-            Some(c) => c.lcds.clone(),
+            Some(c) => (c.lcds.clone(), state.devices.clone()),
             None => return,
         }
     };
@@ -718,27 +988,7 @@ fn refresh_lcd_ui(weak: &slint::Weak<MainWindow>, shared: &Shared) {
     let weak = weak.clone();
     slint::invoke_from_event_loop(move || {
         if let Some(w) = weak.upgrade() {
-            w.set_lcd_entries(conversions::lcd_entries_to_model(&lcds));
-            w.set_config_dirty(true);
-        }
-    })
-    .ok();
-}
-
-fn refresh_rgb_ui(weak: &slint::Weak<MainWindow>, shared: &Shared) {
-    let (rgb_caps, config) = {
-        let state = shared.lock().unwrap();
-        match state.config.as_ref() {
-            Some(c) => (state.rgb_caps.clone(), c.clone()),
-            None => return,
-        }
-    };
-
-    let weak = weak.clone();
-    slint::invoke_from_event_loop(move || {
-        if let Some(w) = weak.upgrade() {
-            let rgb_model = conversions::rgb_devices_to_model(&rgb_caps, &config);
-            w.set_rgb_devices(rgb_model);
+            w.set_lcd_entries(conversions::lcd_entries_to_model(&lcds, &devices));
             w.set_config_dirty(true);
         }
     })
@@ -814,7 +1064,8 @@ fn device_group_zone_count(shared: &Shared, dev_id: &str) -> Option<usize> {
     if has_group { Some(cap.zones.len()) } else { None }
 }
 
-/// Send RGB effect IPC, broadcasting to all zones if zone 0 on a group-zone device.
+/// Send RGB effect IPC, broadcasting to all zones only for animated (synced) modes.
+/// Per-fan modes (Static/Off/Direct with scope All) only send for the target zone.
 fn send_rgb_effect(
     tx: &std::sync::mpsc::Sender<backend::BackendCommand>,
     shared: &Shared,
@@ -822,9 +1073,12 @@ fn send_rgb_effect(
     zone: u8,
     effect: &RgbEffect,
 ) {
-    let zones_to_update: Vec<u8> = if zone == 0 {
+    let is_per_fan = matches!(effect.mode, RgbMode::Off | RgbMode::Static | RgbMode::Direct)
+        && matches!(effect.scope, RgbScope::All);
+
+    let zones_to_update: Vec<u8> = if zone == 0 && !is_per_fan {
         if let Some(zone_count) = device_group_zone_count(shared, dev_id) {
-            // Broadcast: update all zones in config with the same effect
+            // Synced/animated mode: broadcast to all zones
             {
                 let mut state = shared.lock().unwrap();
                 if let Some(ref mut c) = state.config {
@@ -886,6 +1140,79 @@ fn get_or_create_zone_config(dev: &mut RgbDeviceConfig, zone: u8) -> &mut RgbZon
         });
     }
     dev.zones.iter_mut().find(|z| z.zone_index == zone).unwrap()
+}
+
+/// In-place update of RGB zone field(s), preserving expanded-zone state.
+/// When zone 0 on a group-zone device, also propagates to other zones.
+/// NOTE: We deliberately avoid calling devices.set_row_data() to update the
+/// synced flag, because replacing the device in the outer model causes Slint
+/// to re-render the RgbDeviceCard and reset its expanded-zone state.
+/// The synced flag updates on full model rebuild (initial load / save).
+fn update_rgb_zone_in_place(
+    w: &MainWindow,
+    dev_id: &str,
+    zone: u8,
+    mutate: impl Fn(&mut RgbZoneData),
+) {
+    let devices = w.get_rgb_devices();
+    for di in 0..devices.row_count() {
+        if let Some(dev_data) = devices.row_data(di) {
+            if dev_data.device_id.as_str() == dev_id {
+                // Update the target zone via zones sub-model (preserves device card state)
+                if let Some(mut zone_data) = dev_data.zones.row_data(zone as usize) {
+                    mutate(&mut zone_data);
+                    dev_data.zones.set_row_data(zone as usize, zone_data);
+                }
+                // On group-zone devices, propagate zone 0 changes to other zones
+                // and update is_synced_zone flags.
+                if zone == 0 && dev_data.has_group_zones {
+                    if let Some(z0) = dev_data.zones.row_data(0) {
+                        let is_per_fan = matches!(z0.mode.as_str(), "Off" | "Static" | "Direct")
+                            && (z0.scope.as_str().is_empty() || z0.scope.as_str() == "All");
+                        let is_synced = !is_per_fan;
+                        for zi in 1..dev_data.zones.row_count() {
+                            if let Some(mut zd) = dev_data.zones.row_data(zi) {
+                                if is_synced {
+                                    mutate(&mut zd);
+                                }
+                                zd.is_synced_zone = is_synced;
+                                dev_data.zones.set_row_data(zi, zd);
+                            }
+                        }
+                    }
+                }
+                break;
+            }
+        }
+    }
+    w.set_config_dirty(true);
+}
+
+/// In-place update of a zone's color list (add/remove/modify), preserving expanded-zone state.
+/// Rebuilds the zone's colors sub-model and updates via set_row_data on the zones model.
+fn update_rgb_zone_colors_in_place(
+    w: &MainWindow,
+    dev_id: &str,
+    zone: u8,
+    mutate: impl FnOnce(&mut Vec<RgbColorData>),
+) {
+    let devices = w.get_rgb_devices();
+    for di in 0..devices.row_count() {
+        if let Some(dev_data) = devices.row_data(di) {
+            if dev_data.device_id.as_str() == dev_id {
+                if let Some(mut zone_data) = dev_data.zones.row_data(zone as usize) {
+                    let mut colors: Vec<RgbColorData> = (0..zone_data.colors.row_count())
+                        .filter_map(|i| zone_data.colors.row_data(i))
+                        .collect();
+                    mutate(&mut colors);
+                    zone_data.colors = ModelRc::new(VecModel::from(colors));
+                    dev_data.zones.set_row_data(zone as usize, zone_data);
+                }
+                break;
+            }
+        }
+    }
+    w.set_config_dirty(true);
 }
 
 fn parse_rgb_mode(s: &str) -> RgbMode {
