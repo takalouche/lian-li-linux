@@ -51,8 +51,17 @@ lianli-gui             Tauri 2 + Vue 3 desktop app - connects to daemon via Unix
 The daemon runs as a user systemd service. USB access is granted via udev rules (no root required).
 The GUI connects over `$XDG_RUNTIME_DIR/lianli-daemon.sock`.
 
-## Prerequisites
+## Building
 
+### Manually
+#### Prerequisites
+1) clone the repo and submodules
+```bash
+git clone --recurse-submodules https://github.com/sgtaziz/lian-li-linux.git && cd lian-li-linux
+```
+> if you cloned the project without the --recurse-submodules flag, run: git submodule update --init --recursive
+
+2) install dependencies
 - **Rust** (stable, 1.75+)
 - **Bun** (for the GUI frontend)
 - **ffmpeg** and **ffprobe** in `PATH` (for video/GIF decoding)
@@ -69,21 +78,34 @@ sudo apt install libhidapi-dev libusb-1.0-0-dev libwebkit2gtk-4.1-dev libgtk-3-d
 sudo dnf install hidapi-devel libusb1-devel webkit2gtk4.1-devel gtk3-devel librsvg2-devel ffmpeg
 ```
 
-## Building
-
+3) build the project
 ```bash
-git clone --recurse-submodules https://github.com/sgtaziz/LIAN-LI-LINUX.git
-cd LIAN-LI-LINUX
-
-# If you already cloned without --recurse-submodules:
-git submodule update --init --recursive
-
 # Install GUI frontend dependencies and build everything
-cd crates/lianli-gui && bun install && cd ../..
-cargo build --release
+cd crates/lianli-gui && bun install \
+&& cd ../.. cargo build --release
 ```
 
-Binaries: `target/release/lianli-daemon` and `target/release/lianli-gui`
+### With Docker
+
+1) build the docker image
+```bash
+docker build -f docker/build.Dockerfile -t lianli-linux-builder \
+  --build-arg USER_ID="$(id -u)" \
+  --build-arg GROUP_ID="$(id -g)" \
+  .
+```  
+2) build the project
+```bash
+docker run --rm -it \                                            
+  -v "$PWD:/work" \               
+  -v "$PWD/target:/work/target" \  
+  -v "$PWD/.cache/cargo-registry:/home/builder/.cargo/registry" \
+  -v "$PWD/.cache/cargo-git:/home/builder/.cargo/git" \
+  lianli-linux-builder
+
+```
+
+### Binaries: `target/release/lianli-daemon` and `target/release/lianli-gui`
 
 ## Installation
 

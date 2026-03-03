@@ -5,3 +5,5 @@ dist/
 *.swo
 *~
 .DS_Store
+.idea
+.cache
