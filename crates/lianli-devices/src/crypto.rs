@@ -91,6 +91,72 @@ impl PacketBuilder {
     pub fn frame_rate_header(&mut self, fps: u8) -> Vec<u8> {
         self.build(CMD_FRAME_RATE, &[fps])
     }
+
+    // ── H2 (HydroShift II) packet format ─────────────────────────────────────
+    //
+    // WinUsbH2.cs uses a 500-byte plaintext (GetBaseCmdBuf), DES-CBC-PKCS7
+    // encrypts it to 504 bytes, then places the result in a 512-byte frame with
+    // fixed trailer bytes [510]=0xa1, [511]=0x1a.  This differs from the SLV3
+    // format (504-byte plaintext → 512 encrypted, no trailer).
+
+    fn build_h2(&mut self, command: u8, params: &[u8]) -> Vec<u8> {
+        // 500-byte plaintext; need 500 + block_size(8) bytes for encrypt_padded_mut
+        let mut buf = vec![0u8; 508];
+        buf[0] = command;
+        buf[2] = 0x1A;
+        buf[3] = 0x6D;
+
+        let raw = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as u32;
+        let ts = if raw <= self.last_timestamp {
+            self.last_timestamp + 1
+        } else {
+            raw
+        };
+        self.last_timestamp = ts;
+        buf[4..8].copy_from_slice(&ts.to_le_bytes());
+
+        let copy_len = params.len().min(492);
+        buf[8..8 + copy_len].copy_from_slice(&params[..copy_len]);
+
+        // Encrypt the first 500 bytes: PKCS7 pads 500 → 504 bytes (adds 4 bytes)
+        let cipher = DesCbc::new_from_slices(&DES_KEY, &DES_KEY)
+            .expect("DES key and IV must both be 8 bytes");
+        let encrypted = cipher
+            .encrypt_padded_mut::<Pkcs7>(&mut buf, 500)
+            .expect("padding")
+            .to_vec();
+        // encrypted.len() == 504
+
+        // Build the 512-byte header: encrypted + zeros + trailer
+        let mut out = vec![0u8; 512];
+        out[..504].copy_from_slice(&encrypted);
+        out[510] = 0xa1;
+        out[511] = 0x1a;
+        out
+    }
+
+    /// Build an H2 JPEG frame header (cmd 0x65 with payload size).
+    pub fn jpeg_header_h2(&mut self, jpeg_size: usize) -> Vec<u8> {
+        self.build_h2(CMD_PUSH_JPG, &(jpeg_size as u32).to_be_bytes())
+    }
+
+    /// Build an H2 frame rate header (cmd 0x0F).
+    pub fn frame_rate_header_h2(&mut self, fps: u8) -> Vec<u8> {
+        self.build_h2(CMD_FRAME_RATE, &[fps])
+    }
+
+    /// Build an H2 rotation header (cmd 0x0D, value 0-3).
+    pub fn rotation_header_h2(&mut self, rotation: u8) -> Vec<u8> {
+        self.build_h2(CMD_ROTATE, &[rotation & 0x03])
+    }
+
+    /// Build an H2 brightness header (cmd 0x0E, value 0-100).
+    pub fn brightness_header_h2(&mut self, brightness: u8) -> Vec<u8> {
+        self.build_h2(CMD_BRIGHTNESS, &[brightness.min(100)])
+    }
 }
 
 impl Default for PacketBuilder {
