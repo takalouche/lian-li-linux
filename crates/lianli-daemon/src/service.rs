@@ -375,8 +375,8 @@ impl ServiceManager {
             return;
         };
 
-        // Enumerate wired HID fan devices
-        let wired_devices = self.open_wired_fan_devices();
+        // Reuse the already-opened wired fan device handles (populated at startup).
+        let wired_devices = Arc::clone(&self.wired_fan_devices);
 
         let wireless = if self.wireless.has_discovered_devices() {
             Some(Arc::new(self.wireless.clone()))
