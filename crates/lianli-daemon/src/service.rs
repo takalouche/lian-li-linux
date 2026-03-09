@@ -7,6 +7,7 @@ use lianli_devices::crypto::PacketBuilder;
 use lianli_devices::detect::{
     enumerate_devices, enumerate_hid_devices, open_fan_device, open_rgb_devices, DetectedDevice,
 };
+use lianli_devices::hydroshift_lcd::HydroShiftLcdController;
 use lianli_devices::slv3_lcd::Slv3LcdDevice;
 use lianli_devices::traits::FanDevice;
 use lianli_devices::winusb_lcd::WinUsbLcdDevice;
@@ -740,7 +741,7 @@ impl ServiceManager {
 
                 let cfg_key = config_identity(device_cfg);
                 if let Some(mut existing) = self.targets.remove(&cfg_idx) {
-                    if existing.matches(det.bus, det.address, &cfg_key) {
+                    if existing.matches(&serial, &cfg_key) {
                         new_targets.insert(cfg_idx, existing);
                         continue;
                     } else {
@@ -774,7 +775,7 @@ impl ServiceManager {
                             serial,
                             device_cfg.orientation
                         );
-                        let target = ActiveTarget::new(cfg_idx, cfg_key, lcd, asset);
+                        let target = ActiveTarget::new(cfg_idx, cfg_key, serial.clone(), lcd, asset);
                         new_targets.insert(cfg_idx, target);
                     }
                     Err(err) => {
@@ -848,23 +849,10 @@ impl ServiceManager {
 enum LcdBackend {
     Slv3(Slv3LcdDevice),
     WinUsb(WinUsbLcdDevice),
+    HidLcd(HydroShiftLcdController),
 }
 
 impl LcdBackend {
-    fn bus(&self) -> u8 {
-        match self {
-            Self::Slv3(d) => d.bus(),
-            Self::WinUsb(d) => d.bus(),
-        }
-    }
-
-    fn address(&self) -> u8 {
-        match self {
-            Self::Slv3(d) => d.address(),
-            Self::WinUsb(d) => d.address(),
-        }
-    }
-
     fn send_frame(
         &mut self,
         wireless: &WirelessController,
@@ -877,6 +865,7 @@ impl LcdBackend {
                 d.send_frame(builder, frame)
             }
             Self::WinUsb(d) => d.send_frame(frame),
+            Self::HidLcd(d) => d.send_frame(frame),
         }
     }
 }
@@ -884,6 +873,7 @@ impl LcdBackend {
 struct ActiveTarget {
     index: usize,
     key: ConfigKey,
+    device_identity: String,
     lcd: LcdBackend,
     media: MediaRuntime,
     next_due: Option<Instant>,
@@ -891,10 +881,11 @@ struct ActiveTarget {
 }
 
 impl ActiveTarget {
-    fn new(index: usize, key: ConfigKey, lcd: LcdBackend, asset: &MediaAsset) -> Self {
+    fn new(index: usize, key: ConfigKey, device_identity: String, lcd: LcdBackend, asset: &MediaAsset) -> Self {
         Self {
             index,
             key,
+            device_identity,
             lcd,
             media: MediaRuntime::from_asset(asset),
             next_due: None,
@@ -902,8 +893,8 @@ impl ActiveTarget {
         }
     }
 
-    fn matches(&self, bus: u8, address: u8, key: &ConfigKey) -> bool {
-        bus == self.lcd.bus() && address == self.lcd.address() && key == &self.key
+    fn matches(&self, identity: &str, key: &ConfigKey) -> bool {
+        self.device_identity == identity && key == &self.key
     }
 
     fn should_send(&self, now: Instant) -> bool {

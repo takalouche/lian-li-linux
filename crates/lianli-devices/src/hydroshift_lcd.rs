@@ -133,7 +133,6 @@ pub struct AioHandshake {
 /// HydroShift LCD / Galahad2 LCD AIO controller.
 ///
 /// Provides pump + fan speed control, coolant temperature reading, and LCD streaming.
-/// Does NOT touch RGB/LED effects — that's OpenRGB's domain.
 pub struct HydroShiftLcdController {
     device: Mutex<HidDevice>,
     variant: AioLcdVariant,
@@ -232,7 +231,16 @@ impl HydroShiftLcdController {
         Ok(())
     }
 
-    /// Send a JPEG frame to the LCD.
+    /// Send a JPEG frame to the LCD (with lazy initialization on first call).
+    pub fn send_frame(&mut self, frame: &[u8]) -> Result<()> {
+        if !self.initialized {
+            self.apply_lcd_settings()?;
+            self.initialized = true;
+        }
+        self.send_b_command_chunked(CMD_SEND_JPEG, frame)
+    }
+
+    /// Send a JPEG frame to the LCD (no initialization check).
     pub fn send_jpeg(&self, jpeg_data: &[u8]) -> Result<()> {
         self.send_b_command_chunked(CMD_SEND_JPEG, jpeg_data)
     }

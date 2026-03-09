@@ -283,6 +283,26 @@ pub fn open_rgb_devices(
     }
 }
 
+/// Open a detected HID device as an LCD controller.
+///
+/// Returns `None` if the family doesn't support LCD control via HID,
+/// or `Err` if opening/init fails.
+pub fn open_hid_lcd_device(
+    api: &HidApi,
+    det: &DetectedHidDevice,
+) -> Option<Result<crate::hydroshift_lcd::HydroShiftLcdController>> {
+    match det.family {
+        DeviceFamily::HydroShiftLcd | DeviceFamily::Galahad2Lcd => {
+            let hid_dev = match api.open_path(&det.path) {
+                Ok(d) => d,
+                Err(e) => return Some(Err(anyhow::anyhow!("HID open for LCD: {e}"))),
+            };
+            Some(crate::hydroshift_lcd::HydroShiftLcdController::new(hid_dev, det.pid))
+        }
+        _ => None,
+    }
+}
+
 /// Find LCD devices (SLV3/TLV2 wireless LCD fans via USB bulk).
 pub fn find_wireless_lcd_devices() -> Result<Vec<Device<GlobalContext>>> {
     let devices = rusb::devices()?;
