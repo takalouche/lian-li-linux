@@ -756,6 +756,10 @@ impl ServiceManager {
                     .serial
                     .clone()
                     .unwrap_or_else(|| format!("bus{}-addr{}", det.bus, det.address));
+                debug!(
+                    "LCD candidate: {} ({:04x}:{:04x}) serial={} (USB bulk)",
+                    det.name, det.vid, det.pid, serial
+                );
                 candidates.push(LcdCandidate {
                     family: det.family,
                     serial,
@@ -777,6 +781,10 @@ impl ServiceManager {
                     .serial
                     .clone()
                     .unwrap_or_else(|| det.device_id());
+                debug!(
+                    "LCD candidate: {} ({:04x}:{:04x}) serial={} (HID)",
+                    det.name, det.vid, det.pid, serial
+                );
                 candidates.push(LcdCandidate {
                     family: det.family,
                     serial,
@@ -785,6 +793,8 @@ impl ServiceManager {
                     pid: det.pid,
                 });
             }
+        } else {
+            warn!("Failed to initialize hidapi for HID LCD discovery");
         }
 
         let mut new_targets = HashMap::new();
