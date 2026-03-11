@@ -46,5 +46,17 @@ fn main() -> anyhow::Result<()> {
         .init();
 
     let mut manager = service::ServiceManager::new(cli.config)?;
-    manager.run()
+    let restart = manager.run()?;
+
+    if restart {
+        use std::os::unix::process::CommandExt;
+        let exe = std::env::current_exe()?;
+        let args: Vec<String> = std::env::args().skip(1).collect();
+        tracing::info!("Re-executing daemon: {} {}", exe.display(), args.join(" "));
+        let err = std::process::Command::new(exe).args(args).exec();
+        // exec() only returns on error
+        anyhow::bail!("Failed to re-exec daemon: {err}");
+    }
+
+    Ok(())
 }

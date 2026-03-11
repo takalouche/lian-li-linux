@@ -8,9 +8,10 @@
 
 use crate::traits::{FanDevice, RgbDevice};
 use anyhow::{bail, Context, Result};
-use hidapi::HidDevice;
 use lianli_shared::rgb::{RgbEffect, RgbMode, RgbZoneInfo};
+use lianli_transport::HidBackend;
 use parking_lot::Mutex;
+use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 use tracing::{debug, info, warn};
@@ -110,7 +111,7 @@ impl std::fmt::Display for Ene6k77Firmware {
 /// Wraps an opened HID device and provides fan speed control, RPM reading,
 /// and RGB/LED effects.
 pub struct Ene6k77Controller {
-    device: Mutex<HidDevice>,
+    device: Arc<Mutex<HidBackend>>,
     model: Ene6k77Model,
     pid: u16,
     firmware: Option<Ene6k77Firmware>,
@@ -120,12 +121,12 @@ pub struct Ene6k77Controller {
 
 impl Ene6k77Controller {
     /// Open an ENE 6K77 controller by HID device handle and PID.
-    pub fn new(device: HidDevice, pid: u16) -> Result<Self> {
+    pub fn new(device: Arc<Mutex<HidBackend>>, pid: u16) -> Result<Self> {
         let model = Ene6k77Model::from_pid(pid)
             .ok_or_else(|| anyhow::anyhow!("Unknown ENE 6K77 PID: {pid:#06x}"))?;
 
         let mut ctrl = Self {
-            device: Mutex::new(device),
+            device,
             model,
             pid,
             firmware: None,
@@ -475,5 +476,44 @@ impl RgbDevice for Ene6k77Controller {
         thread::sleep(CMD_DELAY);
         debug!("Set MB RGB sync: enabled={enabled} (model={:?}, sub_cmd=0x{sub_cmd:02x})", self.model);
         Ok(())
+    }
+}
+
+/// `Arc<Ene6k77Controller>` can be used directly as a `FanDevice`.
+/// This allows the same controller instance to serve both fan and RGB.
+impl FanDevice for Arc<Ene6k77Controller> {
+    fn set_fan_speed(&self, slot: u8, duty: u8) -> Result<()> {
+        (**self).set_fan_speed(slot, duty)
+    }
+    fn set_fan_speeds(&self, duties: &[u8]) -> Result<()> {
+        (**self).set_fan_speeds(duties)
+    }
+    fn read_fan_rpm(&self) -> Result<Vec<u16>> {
+        (**self).read_fan_rpm()
+    }
+    fn fan_slot_count(&self) -> u8 {
+        (**self).fan_slot_count()
+    }
+}
+
+/// `Arc<Ene6k77Controller>` can be used directly as an `RgbDevice`.
+impl RgbDevice for Arc<Ene6k77Controller> {
+    fn device_name(&self) -> String {
+        (**self).device_name()
+    }
+    fn supported_modes(&self) -> Vec<RgbMode> {
+        (**self).supported_modes()
+    }
+    fn zone_info(&self) -> Vec<RgbZoneInfo> {
+        (**self).zone_info()
+    }
+    fn set_zone_effect(&self, zone: u8, effect: &RgbEffect) -> Result<()> {
+        (**self).set_zone_effect(zone, effect)
+    }
+    fn supports_mb_rgb_sync(&self) -> bool {
+        (**self).supports_mb_rgb_sync()
+    }
+    fn set_mb_rgb_sync(&self, enabled: bool) -> Result<()> {
+        (**self).set_mb_rgb_sync(enabled)
     }
 }

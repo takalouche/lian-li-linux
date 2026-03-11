@@ -154,13 +154,9 @@ fn main() {
     }
 
     // Step 3: Try RusbHidTransport (our actual transport layer)
-    println!("\n[3] Trying RusbHidTransport::open...");
+    println!("\n[3] Trying RusbHidTransport::open_by_usage...");
     if let Some(usb_dev) = find_usb_device() {
-        let iface = lianli_transport::RusbHidTransport::find_hid_interface(&usb_dev)
-            .unwrap_or(iface_num);
-        println!("    Found HID interface: {iface}");
-
-        match lianli_transport::RusbHidTransport::open(usb_dev, iface) {
+        match lianli_transport::RusbHidTransport::open_by_usage(usb_dev, None) {
             Ok(transport) => {
                 println!("    SUCCESS: RusbHidTransport opened");
 

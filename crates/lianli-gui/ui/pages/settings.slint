@@ -1,7 +1,7 @@
 import { Theme } from "../theme.slint";
 import { Card, StatusDot } from "../widgets.slint";
 import { PageHeader } from "../page_header.slint";
-import { ScrollView, SpinBox, CheckBox, Button } from "std-widgets.slint";
+import { ScrollView, SpinBox, CheckBox, Button, ComboBox } from "std-widgets.slint";
 
 export component SettingsPage inherits VerticalLayout {
     in property <bool> daemon-connected: false;
@@ -14,10 +14,12 @@ export component SettingsPage inherits VerticalLayout {
     in property <bool> openrgb-running: false;
     in property <int> openrgb-port: 6743;
     in property <string> openrgb-error: "";
+    in property <string> hid-driver: "HIDAPI";
 
     callback toggle-openrgb(bool);
     callback set-default-fps(int);
     callback set-openrgb-port(int);
+    callback set-hid-driver(string);
     callback save-config();
 
     PageHeader {
@@ -37,6 +39,7 @@ export component SettingsPage inherits VerticalLayout {
         VerticalLayout {
             padding: 24px;
             spacing: 16px;
+            alignment: start;
 
             // Daemon status card
             Card {
@@ -112,6 +115,27 @@ export component SettingsPage inherits VerticalLayout {
                             maximum: 60;
                             edited(val) => { root.set-default-fps(val); }
                         }
+                    }
+
+                    HorizontalLayout {
+                        spacing: 8px;
+                        Text {
+                            text: "HID Driver:";
+                            font-size: 14px;
+                            color: Theme.text-primary;
+                            vertical-alignment: center;
+                        }
+                        ComboBox {
+                            model: ["HIDAPI", "Rusb"];
+                            current-value: root.hid-driver;
+                            selected(val) => { root.set-hid-driver(val); }
+                        }
+                    }
+
+                    Text {
+                        text: "Will restart the daemon to take effect";
+                        font-size: 11px;
+                        color: Theme.text-secondary;
                     }
 
                     Text {

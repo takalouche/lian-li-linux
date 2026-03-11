@@ -81,10 +81,19 @@ impl LcdConfig {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum HidDriver {
+    Hidapi,
+    Rusb,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct AppConfig {
     #[serde(default = "default_fps")]
     pub default_fps: f32,
+    #[serde(default)]
+    pub hid_driver: HidDriver,
     #[serde(default, alias = "devices")]
     pub lcds: Vec<LcdConfig>,
     #[serde(default)]
@@ -99,11 +108,18 @@ impl Default for AppConfig {
     fn default() -> Self {
         Self {
             default_fps: default_fps(),
+            hid_driver: HidDriver::default(),
             lcds: Vec::new(),
             fan_curves: Vec::new(),
             fans: None,
             rgb: None,
         }
+    }
+}
+
+impl Default for HidDriver {
+    fn default() -> Self {
+        Self::Hidapi
     }
 }
 

@@ -14,33 +14,12 @@
 
 use crate::traits::{AioDevice, FanDevice, LcdDevice, RgbDevice};
 use anyhow::{bail, Context, Result};
-use hidapi::HidDevice;
 use lianli_shared::rgb::{RgbEffect, RgbMode, RgbScope, RgbZoneInfo};
 use lianli_shared::screen::ScreenInfo;
-use lianli_transport::RusbHidTransport;
+use lianli_transport::HidBackend;
 use parking_lot::Mutex;
+use std::sync::Arc;
 use tracing::{debug, info, warn};
-
-pub enum HidBackend {
-    Hidapi(HidDevice),
-    Rusb(RusbHidTransport),
-}
-
-impl HidBackend {
-    pub fn write(&self, data: &[u8]) -> Result<usize> {
-        match self {
-            Self::Hidapi(dev) => dev.write(data).map_err(|e| anyhow::anyhow!("{e}")),
-            Self::Rusb(dev) => dev.write(data).map_err(|e| anyhow::anyhow!("{e}")),
-        }
-    }
-
-    pub fn read_timeout(&self, buf: &mut [u8], timeout_ms: i32) -> Result<usize> {
-        match self {
-            Self::Hidapi(dev) => dev.read_timeout(buf, timeout_ms).map_err(|e| anyhow::anyhow!("{e}")),
-            Self::Rusb(dev) => dev.read_timeout(buf, timeout_ms).map_err(|e| anyhow::anyhow!("{e}")),
-        }
-    }
-}
 
 // Report IDs
 const REPORT_ID_A: u8 = 0x01;
@@ -160,7 +139,7 @@ pub struct AioHandshake {
 ///
 /// Provides pump + fan speed control, coolant temperature reading, and LCD streaming.
 pub struct HydroShiftLcdController {
-    device: Mutex<HidBackend>,
+    device: Arc<Mutex<HidBackend>>,
     variant: AioLcdVariant,
     last_handshake: Option<AioHandshake>,
     brightness: u8,
@@ -170,12 +149,12 @@ pub struct HydroShiftLcdController {
 }
 
 impl HydroShiftLcdController {
-    pub fn new(device: HidBackend, pid: u16) -> Result<Self> {
+    pub fn new(device: Arc<Mutex<HidBackend>>, pid: u16) -> Result<Self> {
         let variant = AioLcdVariant::from_pid(pid)
             .ok_or_else(|| anyhow::anyhow!("Unknown AIO LCD PID: {pid:#06x}"))?;
 
         let mut ctrl = Self {
-            device: Mutex::new(device),
+            device,
             variant,
             last_handshake: None,
             brightness: 50,
@@ -542,17 +521,17 @@ const CMD_SET_FAN_LIGHT: u8 = 0x85;
 const FAN_LED_COUNT: u16 = 24;
 
 pub struct AioLcdRgbController {
-    device: Mutex<HidBackend>,
+    device: Arc<Mutex<HidBackend>>,
     variant: AioLcdVariant,
 }
 
 impl AioLcdRgbController {
-    pub fn new(device: HidBackend, pid: u16) -> Result<Self> {
+    pub fn new(device: Arc<Mutex<HidBackend>>, pid: u16) -> Result<Self> {
         let variant = AioLcdVariant::from_pid(pid)
             .ok_or_else(|| anyhow::anyhow!("Unknown AIO LCD PID: {pid:#06x}"))?;
         info!("Opened {} RGB controller", variant.name());
         Ok(Self {
-            device: Mutex::new(device),
+            device,
             variant,
         })
     }

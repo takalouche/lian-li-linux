@@ -522,6 +522,7 @@ export component LcdPage inherits VerticalLayout {
         VerticalLayout {
             padding: 24px;
             spacing: 12px;
+            alignment: start;
 
             if !root.has-config: Text {
                 text: "No config loaded. Is the daemon running?";

@@ -34,6 +34,7 @@ export component MainWindow inherits Window {
     in property <bool> openrgb-running: false;
     in property <int> openrgb-port: 6743;
     in property <string> openrgb-error: "";
+    in property <string> hid-driver: "HIDAPI";
 
     // LCD properties
     in property <[LcdEntryData]> lcd-entries: [];
@@ -56,6 +57,7 @@ export component MainWindow inherits Window {
     callback toggle-openrgb(bool);
     callback set-default-fps(int);
     callback set-openrgb-port(int);
+    callback set-hid-driver(string);
 
     // LCD callbacks
     callback add-lcd();
@@ -176,9 +178,11 @@ export component MainWindow inherits Window {
                 openrgb-running: root.openrgb-running;
                 openrgb-port: root.openrgb-port;
                 openrgb-error: root.openrgb-error;
+                hid-driver: root.hid-driver;
                 toggle-openrgb(enabled) => { root.toggle-openrgb(enabled); }
                 set-default-fps(fps) => { root.set-default-fps(fps); }
                 set-openrgb-port(port) => { root.set-openrgb-port(port); }
+                set-hid-driver(driver) => { root.set-hid-driver(driver); }
                 save-config => { root.save-config(); }
             }
         }

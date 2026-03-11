@@ -96,6 +96,23 @@ fn main() {
         });
     }
 
+    // ── Set HID driver ──
+    {
+        let shared = shared.clone();
+        let weak = window.as_weak();
+        window.on_set_hid_driver(move |driver| {
+            let mut state = shared.lock().unwrap();
+            if let Some(ref mut c) = state.config {
+                c.hid_driver = match driver.as_str() {
+                    "Rusb" => lianli_shared::config::HidDriver::Rusb,
+                    _ => lianli_shared::config::HidDriver::Hidapi,
+                };
+            }
+            drop(state);
+            if let Some(w) = weak.upgrade() { w.set_config_dirty(true); }
+        });
+    }
+
     // ── Set fan update interval ──
     {
         let shared = shared.clone();

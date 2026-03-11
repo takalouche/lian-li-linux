@@ -9,9 +9,10 @@
 
 use crate::traits::{AioDevice, FanDevice, RgbDevice};
 use anyhow::{bail, Context, Result};
-use hidapi::HidDevice;
 use lianli_shared::rgb::{RgbEffect, RgbMode, RgbScope, RgbZoneInfo};
+use lianli_transport::HidBackend;
 use parking_lot::Mutex;
+use std::sync::Arc;
 use tracing::{debug, info, warn};
 
 const REPORT_ID: u8 = 0x01;
@@ -70,18 +71,18 @@ pub struct Galahad2Handshake {
 /// Provides pump + fan speed control and RGB/LED effects.
 /// Does NOT have LCD or coolant temp sensor.
 pub struct Galahad2TrinityController {
-    device: Mutex<HidDevice>,
+    device: Arc<Mutex<HidBackend>>,
     model: Galahad2TrinityModel,
     last_handshake: Option<Galahad2Handshake>,
 }
 
 impl Galahad2TrinityController {
-    pub fn new(device: HidDevice, pid: u16) -> Result<Self> {
+    pub fn new(device: Arc<Mutex<HidBackend>>, pid: u16) -> Result<Self> {
         let model = Galahad2TrinityModel::from_pid(pid)
             .ok_or_else(|| anyhow::anyhow!("Unknown Galahad2 Trinity PID: {pid:#06x}"))?;
 
         let mut ctrl = Self {
-            device: Mutex::new(device),
+            device,
             model,
             last_handshake: None,
         };

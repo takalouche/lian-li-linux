@@ -5,9 +5,13 @@ use crate::rgb_controller::RgbController;
 use anyhow::Result;
 use lianli_devices::crypto::PacketBuilder;
 use lianli_devices::detect::{
-    ensure_hid_devices_bound, enumerate_devices, enumerate_hid_devices, open_fan_device,
-    open_rgb_devices,
+    create_hid_lcd_device, create_wired_controllers,
+    ensure_hid_devices_bound, enumerate_devices, enumerate_hid_devices,
+    open_hid_backend_hidapi, open_hid_backend_rusb, open_hid_lcd_by_vid_pid,
+    open_hid_lcd_device_rusb,
 };
+use lianli_shared::config::HidDriver;
+use lianli_transport::HidBackend;
 use lianli_devices::hydroshift_lcd::HydroShiftLcdController;
 use lianli_devices::slv3_lcd::Slv3LcdDevice;
 use lianli_devices::traits::FanDevice;
@@ -49,11 +53,15 @@ pub struct ServiceManager {
     wired_fan_device_info: Vec<DeviceInfo>,
     /// Shared reference to wired fan device handles (for RPM reading).
     wired_fan_devices: Arc<HashMap<String, Box<dyn FanDevice>>>,
+    /// Shared HID backends keyed by device ID — allows fan, RGB, and LCD
+    /// controllers for the same physical device to share one USB handle.
+    hid_backends: HashMap<String, Arc<Mutex<HidBackend>>>,
     last_device_scan: Instant,
     last_usb_enum: Instant,
     /// Cached USB device list from enumerate_devices() — refreshed every USB_ENUM_INTERVAL.
     cached_usb_devices: Vec<DeviceInfo>,
     running: bool,
+    restart_requested: bool,
     ipc_state: Arc<Mutex<DaemonState>>,
     ipc_stop: Arc<AtomicBool>,
     ipc_thread: Option<JoinHandle<()>>,
@@ -79,10 +87,12 @@ impl ServiceManager {
             rgb_controller: None,
             wired_fan_device_info: Vec::new(),
             wired_fan_devices: Arc::new(HashMap::new()),
+            hid_backends: HashMap::new(),
             last_device_scan: Instant::now() - DEVICE_POLL_INTERVAL,
             last_usb_enum: Instant::now() - USB_ENUM_INTERVAL,
             cached_usb_devices: Vec::new(),
             running: true,
+            restart_requested: false,
             ipc_state,
             ipc_stop: Arc::new(AtomicBool::new(false)),
             ipc_thread: None,
@@ -94,7 +104,50 @@ impl ServiceManager {
         })
     }
 
-    pub fn run(&mut self) -> Result<()> {
+    /// Check if the configured HID driver is rusb.
+    fn use_rusb(&self) -> bool {
+        self.config
+            .as_ref()
+            .map(|c| c.hid_driver == HidDriver::Rusb)
+            .unwrap_or(false)
+    }
+
+    /// Stable device ID for a rusb device — uses serial or USB port path.
+    fn rusb_device_id(det: &lianli_devices::detect::DetectedDevice) -> String {
+        det.device_id()
+    }
+
+    /// Get a cached HID backend or open a new one via rusb.
+    fn get_or_open_backend_rusb(
+        &mut self,
+        det: &lianli_devices::detect::DetectedDevice,
+    ) -> anyhow::Result<Arc<Mutex<HidBackend>>> {
+        let key = Self::rusb_device_id(det);
+        if let Some(backend) = self.hid_backends.get(&key) {
+            return Ok(Arc::clone(backend));
+        }
+        let backend = open_hid_backend_rusb(det)?;
+        self.hid_backends.insert(key, Arc::clone(&backend));
+        Ok(backend)
+    }
+
+    /// Get a cached HID backend or open a new one via hidapi.
+    fn get_or_open_backend_hidapi(
+        &mut self,
+        api: &hidapi::HidApi,
+        key: &str,
+        det: &lianli_devices::detect::DetectedHidDevice,
+    ) -> anyhow::Result<Arc<Mutex<HidBackend>>> {
+        if let Some(backend) = self.hid_backends.get(key) {
+            return Ok(Arc::clone(backend));
+        }
+        let backend = open_hid_backend_hidapi(api, det)?;
+        self.hid_backends.insert(key.to_string(), Arc::clone(&backend));
+        Ok(backend)
+    }
+
+    /// Run the daemon main loop. Returns `true` if the daemon should restart.
+    pub fn run(&mut self) -> Result<bool> {
         info!("=====================================================================");
         info!("LIAN LI DAEMON");
         info!("=====================================================================");
@@ -131,9 +184,10 @@ impl ServiceManager {
             Arc::clone(&self.ipc_stop),
         ));
         self.try_wireless();
-        ensure_hid_devices_bound();
-        self.open_wired_fan_devices();
-        self.init_rgb_controller();
+        if !self.use_rusb() {
+            ensure_hid_devices_bound();
+        }
+        self.init_wired_devices();
         self.start_openrgb_server();
         self.start_fan_control();
 
@@ -146,9 +200,17 @@ impl ServiceManager {
                 if ipc_state.config_reload_pending {
                     ipc_state.config_reload_pending = false;
                     info!("Config reload triggered via IPC");
+                    let old_hid_driver = self.config.as_ref().map(|c| c.hid_driver);
                     // Force the config watcher to pick up the new file
                     drop(ipc_state);
                     if self.load_config() {
+                        let new_hid_driver = self.config.as_ref().map(|c| c.hid_driver);
+                        if old_hid_driver != new_hid_driver {
+                            info!("HID driver changed ({old_hid_driver:?} -> {new_hid_driver:?}), restarting daemon...");
+                            self.restart_requested = true;
+                            self.running = false;
+                            break;
+                        }
                         self.last_device_scan = Instant::now() - DEVICE_POLL_INTERVAL;
                         self.start_fan_control();
                         self.apply_rgb_config();
@@ -180,7 +242,7 @@ impl ServiceManager {
         }
 
         self.shutdown();
-        Ok(())
+        Ok(self.restart_requested)
     }
 
     /// Sync current config to IPC shared state.
@@ -206,13 +268,7 @@ impl ServiceManager {
                         continue;
                     }
                     let screen = screen_info_for(det.family);
-                    let device_id = if det.serial.is_none() && lianli_shared::device_id::uses_hid(det.family) {
-                        format!("hid:{:04x}:{:04x}", det.vid, det.pid)
-                    } else {
-                        det.serial
-                            .clone()
-                            .unwrap_or_else(|| format!("usb:{}:{}", det.bus, det.address))
-                    };
+                    let device_id = det.device_id();
 
                     cached.push(DeviceInfo {
                         device_id: device_id.clone(),
@@ -349,6 +405,12 @@ impl ServiceManager {
             fan_controller.stop();
         }
 
+        // Drop RGB controller before HID backends so device handles are released cleanly
+        self.rgb_controller = None;
+        self.ipc_state.lock().rgb_controller = None;
+        self.wired_fan_devices = Arc::new(HashMap::new());
+        self.hid_backends.clear();
+
         self.wireless.stop();
 
         // Stop OpenRGB server
@@ -404,39 +466,143 @@ impl ServiceManager {
         self.fan_controller = Some(controller);
     }
 
-    /// Initialize the RGB controller with wired HID RGB devices and wireless controller.
-    fn init_rgb_controller(&mut self) {
+    /// Initialize all wired HID devices (fan + RGB) in a single pass.
+    /// Shares one USB handle per physical device across fan and RGB controllers.
+    fn init_wired_devices(&mut self) {
+        let mut fan_devices: HashMap<String, Box<dyn FanDevice>> = HashMap::new();
         let mut wired_rgb: HashMap<String, Box<dyn lianli_devices::traits::RgbDevice>> =
             HashMap::new();
+        self.wired_fan_device_info.clear();
 
-        let api = match hidapi::HidApi::new() {
-            Ok(api) => api,
-            Err(err) => {
-                warn!("Failed to initialize HID API for RGB devices: {err}");
-                return;
-            }
-        };
-
-        for det in enumerate_hid_devices(&api) {
-            if let Some(result) = open_rgb_devices(&api, &det) {
-                let base_id = det.device_id();
-                match result {
-                    Ok(devices) => {
-                        for (suffix, ctrl) in devices {
-                            let device_id = if suffix.is_empty() {
-                                base_id.clone()
-                            } else {
-                                format!("{base_id}:{suffix}")
-                            };
-                            info!("Opened {} as RGB device: {device_id}", det.name);
-                            wired_rgb.insert(device_id, ctrl);
-                        }
+        if self.use_rusb() {
+            let usb_devs = match enumerate_devices() {
+                Ok(devs) => devs,
+                Err(err) => {
+                    warn!("Failed to enumerate USB devices: {err}");
+                    self.wired_fan_devices = Arc::new(fan_devices);
+                    self.init_rgb_controller_from(wired_rgb);
+                    return;
+                }
+            };
+            for det in usb_devs {
+                if !lianli_shared::device_id::uses_hid(det.family) {
+                    continue;
+                }
+                let base_id = Self::rusb_device_id(&det);
+                let backend = match self.get_or_open_backend_rusb(&det) {
+                    Ok(b) => b,
+                    Err(e) => {
+                        warn!("Failed to open HID backend for {}: {e}", det.name);
+                        continue;
                     }
-                    Err(err) => warn!("Failed to init RGB for {}: {err}", det.name),
+                };
+                if let Some(result) = create_wired_controllers(det.family, det.pid, backend) {
+                    self.register_wired_controllers(
+                        &base_id, det.name, det.family, det.serial.as_deref(),
+                        result, &mut fan_devices, &mut wired_rgb,
+                    );
+                }
+            }
+        } else {
+            let api = match hidapi::HidApi::new() {
+                Ok(api) => api,
+                Err(err) => {
+                    warn!("Failed to initialize HID API: {err}");
+                    self.wired_fan_devices = Arc::new(fan_devices);
+                    self.init_rgb_controller_from(wired_rgb);
+                    return;
+                }
+            };
+            for det in enumerate_hid_devices(&api) {
+                let base_id = det.device_id();
+                let backend = match self.get_or_open_backend_hidapi(&api, &base_id, &det) {
+                    Ok(b) => b,
+                    Err(e) => {
+                        warn!("Failed to open HID backend for {}: {e}", det.name);
+                        continue;
+                    }
+                };
+                if let Some(result) = create_wired_controllers(det.family, det.pid, backend) {
+                    self.register_wired_controllers(
+                        &base_id, det.name, det.family, det.serial.as_deref(),
+                        result, &mut fan_devices, &mut wired_rgb,
+                    );
                 }
             }
         }
 
+        let arc = Arc::new(fan_devices);
+        self.wired_fan_devices = Arc::clone(&arc);
+        self.init_rgb_controller_from(wired_rgb);
+    }
+
+    /// Register fan + RGB from a unified controller set.
+    fn register_wired_controllers(
+        &mut self,
+        base_id: &str,
+        name: &str,
+        family: DeviceFamily,
+        serial: Option<&str>,
+        result: anyhow::Result<lianli_devices::detect::WiredControllerSet>,
+        fan_devices: &mut HashMap<String, Box<dyn FanDevice>>,
+        wired_rgb: &mut HashMap<String, Box<dyn lianli_devices::traits::RgbDevice>>,
+    ) {
+        match result {
+            Ok(set) => {
+                if let Some(fan_ctrl) = set.fan {
+                    info!("Opened {name} as fan device: {base_id}");
+                    let ports = fan_ctrl.fan_port_info();
+                    let per_fan = fan_ctrl.per_fan_control();
+                    let mb_sync = fan_ctrl.supports_mb_sync();
+                    for &(port, fan_count) in &ports {
+                        let device_id = if ports.len() > 1 {
+                            format!("{base_id}:port{port}")
+                        } else {
+                            base_id.to_string()
+                        };
+                        let dev_name = if ports.len() > 1 {
+                            format!("{name} Port {port}")
+                        } else {
+                            name.to_string()
+                        };
+                        self.wired_fan_device_info.push(DeviceInfo {
+                            device_id,
+                            family,
+                            name: dev_name,
+                            serial: serial.map(|s| s.to_string()),
+                            has_lcd: false,
+                            has_fan: true,
+                            has_pump: false,
+                            has_rgb: family.has_rgb(),
+                            fan_count: Some(fan_count),
+                            per_fan_control: Some(per_fan),
+                            mb_sync_support: mb_sync,
+                            rgb_zone_count: None,
+                            screen_width: None,
+                            screen_height: None,
+                        });
+                    }
+                    fan_devices.insert(base_id.to_string(), fan_ctrl);
+                }
+                for (suffix, rgb_ctrl) in set.rgb {
+                    let device_id = if suffix.is_empty() {
+                        base_id.to_string()
+                    } else {
+                        format!("{base_id}:{suffix}")
+                    };
+                    info!("Opened {name} as RGB device: {device_id}");
+                    wired_rgb.insert(device_id, rgb_ctrl);
+                }
+            }
+            Err(err) => warn!("Failed to init {name}: {err}"),
+        }
+    }
+
+    /// Create the RgbController from pre-opened wired RGB devices + wireless.
+    fn init_rgb_controller_from(
+        &mut self,
+        wired_rgb: HashMap<String, Box<dyn lianli_devices::traits::RgbDevice>>,
+    ) {
         let wireless = if self.wireless.has_discovered_devices() {
             Some(Arc::new(self.wireless.clone()))
         } else {
@@ -445,7 +611,6 @@ impl ServiceManager {
 
         let mut controller = RgbController::new(wired_rgb, wireless);
 
-        // Apply initial RGB config if available
         if let Some(ref cfg) = self.config {
             if let Some(ref rgb_cfg) = cfg.rgb {
                 controller.apply_config(rgb_cfg);
@@ -454,8 +619,6 @@ impl ServiceManager {
 
         let rgb_arc = Arc::new(Mutex::new(controller));
         self.rgb_controller = Some(Arc::clone(&rgb_arc));
-
-        // Share with IPC state
         self.ipc_state.lock().rgb_controller = Some(rgb_arc);
     }
 
@@ -524,70 +687,6 @@ impl ServiceManager {
         }
     }
 
-    /// Enumerate and open all wired HID fan devices on the system.
-    /// Also populates `self.wired_fan_device_info` with per-port DeviceInfo entries
-    /// and `self.wired_fan_devices` with shared device handles.
-    fn open_wired_fan_devices(&mut self) -> Arc<HashMap<String, Box<dyn FanDevice>>> {
-        let mut devices: HashMap<String, Box<dyn FanDevice>> = HashMap::new();
-        self.wired_fan_device_info.clear();
-
-        let api = match hidapi::HidApi::new() {
-            Ok(api) => api,
-            Err(err) => {
-                warn!("Failed to initialize HID API for fan devices: {err}");
-                return Arc::new(devices);
-            }
-        };
-
-        for det in enumerate_hid_devices(&api) {
-            if let Some(result) = open_fan_device(&api, &det) {
-                let base_id = det.device_id();
-                match result {
-                    Ok(ctrl) => {
-                        info!("Opened {} as fan device: {base_id}", det.name);
-                        // Build per-port DeviceInfo entries
-                        let ports = ctrl.fan_port_info();
-                        let per_fan = ctrl.per_fan_control();
-                        let mb_sync = ctrl.supports_mb_sync();
-                        for &(port, fan_count) in &ports {
-                            let device_id = if ports.len() > 1 {
-                                format!("{base_id}:port{port}")
-                            } else {
-                                base_id.clone()
-                            };
-                            let name = if ports.len() > 1 {
-                                format!("{} Port {port}", det.name)
-                            } else {
-                                det.name.to_string()
-                            };
-                            self.wired_fan_device_info.push(DeviceInfo {
-                                device_id,
-                                family: det.family,
-                                name,
-                                serial: det.serial.clone(),
-                                has_lcd: false,
-                                has_fan: true,
-                                has_pump: false,
-                                has_rgb: det.family.has_rgb(),
-                                fan_count: Some(fan_count),
-                                per_fan_control: Some(per_fan),
-                                mb_sync_support: mb_sync,
-                                rgb_zone_count: None, // Set by RGB controller later
-                                screen_width: None,
-                                screen_height: None,
-                            });
-                        }
-                        devices.insert(base_id, ctrl);
-                    }
-                    Err(err) => warn!("Failed to init {}: {err}", det.name),
-                }
-            }
-        }
-
-        let arc = Arc::new(devices);
-        self.wired_fan_devices = Arc::clone(&arc);
-        arc
-    }
 
     /// Try to connect wireless TX/RX once. Non-blocking — if no dongles found, skip gracefully.
     fn try_wireless(&mut self) {
@@ -645,11 +744,7 @@ impl ServiceManager {
             .into_iter()
             .filter_map(|det| {
                 let screen = screen_info_for(det.family)?;
-                let id = if det.serial.is_none() && lianli_shared::device_id::uses_hid(det.family) {
-                    format!("hid:{:04x}:{:04x}", det.vid, det.pid)
-                } else {
-                    det.serial?
-                };
+                let id = det.device_id();
                 Some((id, screen))
             })
             .collect();
@@ -702,10 +797,12 @@ impl ServiceManager {
 
         struct LcdCandidate {
             family: DeviceFamily,
-            serial: String,
+            device_id: String,
             usb_device: Option<Device<rusb::GlobalContext>>,
             vid: u16,
             pid: u16,
+            bus: u8,
+            address: u8,
         }
 
         let mut candidates: Vec<LcdCandidate> = Vec::new();
@@ -715,25 +812,20 @@ impl ServiceManager {
                 if !LCD_FAMILIES.contains(&det.family) {
                     continue;
                 }
-                let is_hid = lianli_shared::device_id::uses_hid(det.family);
-                let serial = if det.serial.is_none() && is_hid {
-                    format!("hid:{:04x}:{:04x}", det.vid, det.pid)
-                } else {
-                    det.serial
-                        .clone()
-                        .unwrap_or_else(|| format!("bus{}-addr{}", det.bus, det.address))
-                };
-                let transport = if is_hid { "HID" } else { "USB bulk" };
+                let device_id = det.device_id();
+                let transport = if lianli_shared::device_id::uses_hid(det.family) { "HID" } else { "USB bulk" };
                 debug!(
-                    "LCD candidate: {} ({:04x}:{:04x}) serial={} ({transport})",
-                    det.name, det.vid, det.pid, serial
+                    "LCD candidate: {} ({:04x}:{:04x}) id={device_id} ({transport})",
+                    det.name, det.vid, det.pid
                 );
                 candidates.push(LcdCandidate {
                     family: det.family,
-                    serial,
+                    device_id,
                     usb_device: Some(det.device),
                     vid: det.vid,
                     pid: det.pid,
+                    bus: det.bus,
+                    address: det.address,
                 });
             }
         }
@@ -753,7 +845,7 @@ impl ServiceManager {
                 };
 
                 let matched = if let Some(serial) = &device_cfg.serial {
-                    candidates.iter().find(|c| &c.serial == serial)
+                    candidates.iter().find(|c| &c.device_id == serial)
                 } else if let Some(index) = device_cfg.index {
                     candidates.get(index)
                 } else {
@@ -773,7 +865,7 @@ impl ServiceManager {
 
                 let cfg_key = config_identity(device_cfg);
                 if let Some(mut existing) = self.targets.remove(&cfg_idx) {
-                    if existing.matches(&candidate.serial, &cfg_key) {
+                    if existing.matches(&candidate.device_id, &cfg_key) {
                         new_targets.insert(cfg_idx, existing);
                         continue;
                     } else {
@@ -799,16 +891,37 @@ impl ServiceManager {
                         lianli_devices::universal_screen::open(device).map(LcdBackend::WinUsb)
                     }
                     DeviceFamily::HydroShiftLcd | DeviceFamily::Galahad2Lcd => {
-                        let usb_dev = Device::clone(candidate.usb_device.as_ref().unwrap());
-                        let iface = lianli_transport::RusbHidTransport::find_hid_interface(&usb_dev)
-                            .unwrap_or(0);
-                        lianli_transport::RusbHidTransport::open(usb_dev, iface)
-                            .map_err(|e| anyhow::anyhow!("RusbHid open {:04x}:{:04x}: {e}", candidate.vid, candidate.pid))
-                            .and_then(|transport| {
-                                let backend = lianli_devices::hydroshift_lcd::HidBackend::Rusb(transport);
-                                HydroShiftLcdController::new(backend, candidate.pid)
-                            })
+                        // Try to reuse a shared HID backend (opened by init_rgb_controller).
+                        if let Some(backend) = self.hid_backends.get(&candidate.device_id) {
+                            match create_hid_lcd_device(candidate.family, candidate.pid, Arc::clone(backend)) {
+                                Some(result) => result.map(LcdBackend::HidLcd),
+                                None => Err(anyhow::anyhow!("Not an LCD device")),
+                            }
+                        } else if self.use_rusb() {
+                            let device = Device::clone(candidate.usb_device.as_ref().unwrap());
+                            let det = lianli_devices::detect::DetectedDevice {
+                                device,
+                                family: candidate.family,
+                                name: "HydroShift/Galahad LCD",
+                                vid: candidate.vid,
+                                pid: candidate.pid,
+                                bus: candidate.bus,
+                                address: candidate.address,
+                                serial: Some(candidate.device_id.clone()),
+                                hid_usage_page: None,
+                            };
+                            match open_hid_lcd_device_rusb(&det) {
+                                Some(result) => result.map(LcdBackend::HidLcd),
+                                None => Err(anyhow::anyhow!("Not an LCD device")),
+                            }
+                        } else {
+                            open_hid_lcd_by_vid_pid(
+                                candidate.vid,
+                                candidate.pid,
+                                candidate.family,
+                            )
                             .map(LcdBackend::HidLcd)
+                        }
                     }
                     _ => unreachable!(),
                 };
@@ -818,10 +931,10 @@ impl ServiceManager {
                         info!(
                             "[devices] LCD[{}] attached (serial: {}, orientation: {:.0}°)",
                             device_cfg.device_id(),
-                            candidate.serial,
+                            candidate.device_id,
                             device_cfg.orientation
                         );
-                        let target = ActiveTarget::new(cfg_idx, cfg_key, candidate.serial.clone(), lcd, asset);
+                        let target = ActiveTarget::new(cfg_idx, cfg_key, candidate.device_id.clone(), lcd, asset);
                         new_targets.insert(cfg_idx, target);
                     }
                     Err(err) => {

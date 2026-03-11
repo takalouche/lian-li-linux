@@ -12,8 +12,8 @@
 
 use crate::traits::{FanDevice, RgbDevice};
 use anyhow::{bail, Context, Result};
-use hidapi::HidDevice;
 use lianli_shared::rgb::{RgbEffect, RgbMode, RgbScope, RgbZoneInfo};
+use lianli_transport::HidBackend;
 use parking_lot::Mutex;
 use std::sync::Arc;
 use tracing::{debug, info, warn};
@@ -63,7 +63,7 @@ pub struct TlFanHandshake {
 /// Wraps an opened HID device for a TL Fan controller (0x0416:0x7372).
 /// Provides fan speed control, RPM reading, and RGB/LED effects.
 pub struct TlFanController {
-    device: Mutex<HidDevice>,
+    device: Arc<Mutex<HidBackend>>,
     /// Last handshake result (updated on each handshake call).
     /// Behind a Mutex for interior mutability — allows `read_fan_rpm(&self)`
     /// to refresh RPMs while the device is shared across threads.
@@ -72,9 +72,9 @@ pub struct TlFanController {
 
 impl TlFanController {
     /// Open a TL Fan controller from an already-opened HID device.
-    pub fn new(device: HidDevice) -> Result<Self> {
+    pub fn new(device: Arc<Mutex<HidBackend>>) -> Result<Self> {
         let ctrl = Self {
-            device: Mutex::new(device),
+            device,
             last_handshake: Mutex::new(None),
         };
 
@@ -430,7 +430,7 @@ impl TlFanController {
     }
 
     /// Drain any stale data sitting in the read buffer.
-    fn drain_read_buffer(dev: &HidDevice) {
+    fn drain_read_buffer(dev: &HidBackend) {
         let mut buf = [0u8; PACKET_SIZE];
         while dev.read_timeout(&mut buf, 0).unwrap_or(0) > 0 {}
     }
@@ -684,9 +684,9 @@ impl RgbDevice for TlFanPortDevice {
 }
 
 impl TlFanController {
-    /// Create per-port RGB devices from this controller.
+    /// Create per-port RGB devices from a shared controller reference.
     /// Each active port becomes a separate `RgbDevice`.
-    pub fn into_port_devices(self) -> Vec<(u8, TlFanPortDevice)> {
+    pub fn port_devices(self: &Arc<Self>) -> Vec<(u8, TlFanPortDevice)> {
         let port_fan_counts = self
             .last_handshake
             .lock()
@@ -694,7 +694,6 @@ impl TlFanController {
             .map(|hs| hs.port_fan_counts)
             .unwrap_or([0; 4]);
 
-        let controller = Arc::new(self);
         port_fan_counts
             .iter()
             .enumerate()
@@ -702,9 +701,38 @@ impl TlFanController {
             .map(|(port, &count)| {
                 (
                     port as u8,
-                    TlFanPortDevice::new(Arc::clone(&controller), port as u8, count),
+                    TlFanPortDevice::new(Arc::clone(self), port as u8, count),
                 )
             })
             .collect()
+    }
+}
+
+/// `Arc<TlFanController>` can be used directly as a `FanDevice`.
+/// This allows the same controller instance to serve both fan and RGB.
+impl FanDevice for Arc<TlFanController> {
+    fn set_fan_speed(&self, slot: u8, duty: u8) -> Result<()> {
+        (**self).set_fan_speed(slot, duty)
+    }
+    fn set_fan_speeds(&self, duties: &[u8]) -> Result<()> {
+        (**self).set_fan_speeds(duties)
+    }
+    fn read_fan_rpm(&self) -> Result<Vec<u16>> {
+        (**self).read_fan_rpm()
+    }
+    fn fan_slot_count(&self) -> u8 {
+        (**self).fan_slot_count()
+    }
+    fn fan_port_info(&self) -> Vec<(u8, u8)> {
+        (**self).fan_port_info()
+    }
+    fn per_fan_control(&self) -> bool {
+        (**self).per_fan_control()
+    }
+    fn supports_mb_sync(&self) -> bool {
+        (**self).supports_mb_sync()
+    }
+    fn set_mb_rpm_sync(&self, port: u8, sync: bool) -> Result<()> {
+        self.set_port_mb_rpm_sync(port, sync)
     }
 }

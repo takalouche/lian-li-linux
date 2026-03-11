@@ -93,6 +93,7 @@ fn run_backend(
     poll_daemon(&window, &shared);
     load_config(&window, &shared);
     let mut was_connected = ipc_client::is_daemon_running();
+    let mut last_device_count: usize = shared.lock().unwrap().devices.len();
 
     loop {
         let timeout = if pending.is_empty() {
@@ -145,6 +146,14 @@ fn run_backend(
                     if is_connected && !was_connected {
                         tracing::info!("Daemon reconnected, reloading config");
                         load_config(&window, &shared);
+                    }
+                    // Reload config when device count changes (daemon may still
+                    // be opening devices after initial connection).
+                    let current_device_count = shared.lock().unwrap().devices.len();
+                    if is_connected && current_device_count != last_device_count {
+                        tracing::info!("Device count changed ({last_device_count} -> {current_device_count}), reloading config");
+                        load_config(&window, &shared);
+                        last_device_count = current_device_count;
                     }
                     was_connected = is_connected;
                     last_poll = Instant::now();
@@ -242,6 +251,10 @@ fn load_config(window: &slint::Weak<crate::MainWindow>, shared: &crate::Shared) 
         let fan_update_interval = config.fans.as_ref()
             .map(|f| f.update_interval_ms as i32)
             .unwrap_or(1000);
+        let hid_driver = match config.hid_driver {
+            lianli_shared::config::HidDriver::Hidapi => "HIDAPI",
+            lianli_shared::config::HidDriver::Rusb => "Rusb",
+        };
 
         let window = window.clone();
         slint::invoke_from_event_loop(move || {
@@ -253,6 +266,7 @@ fn load_config(window: &slint::Weak<crate::MainWindow>, shared: &crate::Shared) 
                 w.set_default_fps(default_fps);
                 w.set_openrgb_enabled(openrgb_enabled);
                 w.set_openrgb_port(openrgb_port);
+                w.set_hid_driver(slint::SharedString::from(hid_driver));
 
                 // LCD entries
                 let lcd_model = conversions::lcd_entries_to_model(&config.lcds, &devices);
