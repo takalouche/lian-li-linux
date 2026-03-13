@@ -1027,6 +1027,18 @@ impl LcdBackend {
             Self::HidLcd(d) => d.send_frame(frame),
         }
     }
+
+    fn send_frame_verified(
+        &mut self,
+        wireless: &WirelessController,
+        builder: &mut PacketBuilder,
+        frame: &[u8],
+    ) -> anyhow::Result<()> {
+        match self {
+            Self::WinUsb(d) => d.send_frame_verified(frame),
+            _ => self.send_frame(wireless, builder, frame),
+        }
+    }
 }
 
 struct ActiveTarget {
@@ -1071,13 +1083,18 @@ impl ActiveTarget {
         wireless: &WirelessController,
         builder: &mut PacketBuilder,
     ) -> Result<bool, SendError> {
+        let is_static = matches!(self.media, MediaRuntime::Static { .. });
         let frame = match self.media.next_frame_bytes() {
             Some(bytes) => bytes,
             None => return Ok(false),
         };
 
-        self.lcd
-            .send_frame(wireless, builder, frame)
+        let result = if is_static {
+            self.lcd.send_frame_verified(wireless, builder, frame)
+        } else {
+            self.lcd.send_frame(wireless, builder, frame)
+        };
+        result
             .map_err(|err| match err.downcast::<lianli_transport::TransportError>() {
                 Ok(usb) => SendError::Usb(usb),
                 Err(other) => SendError::Other(other),

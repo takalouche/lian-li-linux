@@ -29,6 +29,7 @@ pub struct WinUsbLcdDevice {
     address: u8,
     serial: String,
     initialized: bool,
+    last_read_ok: bool,
 }
 
 impl WinUsbLcdDevice {
@@ -64,6 +65,7 @@ impl WinUsbLcdDevice {
             address,
             serial,
             initialized: false,
+            last_read_ok: false,
         })
     }
 
@@ -103,8 +105,28 @@ impl WinUsbLcdDevice {
             .write(&packet, LCD_WRITE_TIMEOUT)
             .context("writing LCD frame")?;
 
-        self.log_read_response("frame ack");
+        self.read_response("frame ack");
 
+        Ok(())
+    }
+
+    /// Send a JPEG frame, retrying up to 3 times if the device doesn't ack.
+    pub fn send_frame_verified(&mut self, frame: &[u8]) -> Result<()> {
+        for attempt in 0..3u32 {
+            match self.send_frame(frame) {
+                Ok(()) if self.last_read_ok => return Ok(()),
+                Ok(()) => {
+                    warn!("Frame ack missing (attempt {}), reinitializing", attempt + 1);
+                    self.initialized = false;
+                }
+                Err(e) if attempt < 2 => {
+                    warn!("Frame send failed (attempt {}): {e}, reinitializing", attempt + 1);
+                    self.initialized = false;
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        warn!("Frame delivery unconfirmed after 3 attempts, proceeding anyway");
         Ok(())
     }
 
@@ -114,7 +136,7 @@ impl WinUsbLcdDevice {
         self.transport
             .write(&header, LCD_WRITE_TIMEOUT)
             .context("setting brightness")?;
-        self.log_read_response("brightness");
+        self.read_response("brightness");
         debug!("Set brightness to {}", brightness.min(100));
         Ok(())
     }
@@ -125,7 +147,7 @@ impl WinUsbLcdDevice {
         self.transport
             .write(&header, LCD_WRITE_TIMEOUT)
             .context("setting rotation")?;
-        self.log_read_response("rotation");
+        self.read_response("rotation");
         debug!("Set rotation to {}", rotation);
         Ok(())
     }
@@ -136,13 +158,13 @@ impl WinUsbLcdDevice {
         self.transport
             .write(&header, LCD_WRITE_TIMEOUT)
             .context("setting frame rate")?;
-        self.log_read_response("frame rate");
+        self.read_response("frame rate");
         debug!("Set frame rate to {fps}");
         Ok(())
     }
 
     fn do_init(&mut self) -> Result<()> {
-        // GetVer handshake — also auto-detects endpoint transfer type via fallback read.
+        // GetVer handshake — auto-detects endpoint transfer type.
         let ver_header = self.builder.get_ver_header_h2();
         self.transport
             .write(&ver_header, LCD_WRITE_TIMEOUT)
@@ -165,16 +187,22 @@ impl WinUsbLcdDevice {
         Ok(())
     }
 
-    /// Read and log a device response. Non-fatal — timeouts are expected
-    /// for some devices.
-    fn log_read_response(&mut self, context: &str) {
+    /// Read device response. Non-fatal — sets `last_read_ok`.
+    fn read_response(&mut self, context: &str) {
         let mut buf = [0u8; 512];
         match self.transport.read(&mut buf, USB_TIMEOUT) {
             Ok(n) if n > 0 => {
                 debug!("Response for {context} ({n} bytes): {:02x?}", &buf[..n.min(32)]);
+                self.last_read_ok = true;
             }
-            Ok(_) => {}
-            Err(e) => warn!("Read after {context} failed: {e}"),
+            Ok(_) => {
+                debug!("No response for {context} (timeout)");
+                self.last_read_ok = false;
+            }
+            Err(e) => {
+                warn!("Read after {context} failed: {e}");
+                self.last_read_ok = false;
+            }
         }
     }
 }
